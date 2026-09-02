@@ -37,7 +37,7 @@ export async function canManageLocation(client: typeof db, actor: EnrichedSessio
   return Boolean(scope);
 }
 
-async function loadEvaluationInput(client: typeof db, command: AssignmentCommand) {
+export async function loadEvaluationInput(client: typeof db, command: AssignmentCommand) {
   const [shift] = await client.select().from(shifts).where(and(eq(shifts.id, command.shiftId), eq(shifts.status, "active"))).limit(1);
   if (!shift) return null;
   const [staff, skills, certifications, rules, exceptions, existing, [headcount]] = await Promise.all([

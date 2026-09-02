@@ -58,13 +58,19 @@ export async function getScheduleForLocation(
     staffId: assignments.staffId,
     firstName: userProfiles.firstName,
     lastName: userProfiles.lastName,
+    riskFlags: assignments.riskFlags,
   }).from(assignments)
     .innerJoin(shifts, eq(assignments.shiftId, shifts.id))
     .innerJoin(userProfiles, eq(assignments.staffId, userProfiles.userId))
     .where(and(eq(shifts.scheduleWeekId, week.id), eq(assignments.status, "assigned"))) : [];
   const weekShifts = rawShifts.map((shift) => {
     const assignees = assignedStaff.filter((assignment) => assignment.shiftId === shift.shiftId);
-    return { ...shift, assignees, openHeadcount: Math.max(0, shift.headcount - assignees.length) };
+    return {
+      ...shift,
+      assignees,
+      riskFlags: [...new Set(assignees.flatMap((assignment) => assignment.riskFlags))],
+      openHeadcount: Math.max(0, shift.headcount - assignees.length),
+    };
   });
 
   return {
@@ -88,6 +94,7 @@ export async function getMySchedule(weekStart: string, actor: EnrichedSession) {
     locationName: locations.name,
     locationTimezone: locations.timezone,
     skillName: skills.name,
+    riskFlags: assignments.riskFlags,
   }).from(assignments)
     .innerJoin(shifts, eq(assignments.shiftId, shifts.id))
     .innerJoin(scheduleWeeks, eq(shifts.scheduleWeekId, scheduleWeeks.id))

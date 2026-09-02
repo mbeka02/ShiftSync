@@ -80,8 +80,10 @@ const withinValidity = (date: string, record: Validity) =>
 const hours = (start: Date, end: Date) => (end.getTime() - start.getTime()) / 3_600_000;
 const active = (assignment: ExistingAssignment) => assignment.status === "assigned";
 
-function isAvailable(input: AssignmentEvaluationInput) {
-  const { candidateShift: shift, candidateStaff: staff } = input;
+export function isShiftWithinAvailability(
+  staff: Pick<AssignmentEvaluationInput["candidateStaff"], "availabilityRules" | "availabilityExceptions">,
+  shift: Pick<AssignmentEvaluationInput["candidateShift"], "startsAt" | "endsAt">,
+) {
   const unavailable = staff.availabilityExceptions.some((exception) => {
     const start = zonedParts(shift.startsAt, exception.timezone);
     return exception.type === "unavailable" && exception.exceptionDate === start.date;
@@ -115,6 +117,10 @@ function isAvailable(input: AssignmentEvaluationInput) {
     const nextDate = addDays(start.date, 1);
     return shiftStart >= windowStart && end.date === nextDate && shiftEnd <= windowEnd;
   });
+}
+
+function isAvailable(input: AssignmentEvaluationInput) {
+  return isShiftWithinAvailability(input.candidateStaff, input.candidateShift);
 }
 
 function addDays(date: string, count: number) {

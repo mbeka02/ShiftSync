@@ -3,3 +3,4 @@ export {};
 export * from "./auth";
 export * from "./users";
 export * from "./scheduling";
+export * from "./operations";

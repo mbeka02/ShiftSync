@@ -15,14 +15,6 @@ import { describe, it, expect } from "vitest";
  * §3.25 Outbox for Realtime Reliability, §9 Pusher Spike.
  */
 
-// Codex: create `server/realtime/publisher.ts` exporting:
-//   publishEvent(channel: string, event: string, payload: Record<string, unknown>): Promise<void>
-//
-// It should use the `pusher` npm package (server-side SDK) with credentials
-// from environment variables: PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET, PUSHER_CLUSTER.
-//
-// The function must reject on credential or network failure and resolve on success.
-
 describe("Pusher transport spike", () => {
   it("can publish an event to a test channel using environment credentials", async () => {
     // This test requires real Pusher credentials in the test environment.

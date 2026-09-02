@@ -2,7 +2,7 @@
 
 ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a fictional restaurant group operating four locations across two time zones. It helps managers build safe, fair schedules while giving staff a clear way to manage availability, swaps, drops, and shift coverage.
 
-> **Project status:** Phase 0 infrastructure and design-system foundations are complete. Product functionality is being delivered incrementally, beginning with authentication, role-based access, and published schedule reads.
+> **Project status:** Slice 1 (Authentication, Role-Based Access Control, and Published Schedule Read) is complete. Users can authenticate with role-aware demo accounts, managers can view location-scoped schedule boards, and staff can inspect their published shifts under the Harbor Calm visual system.
 
 ## Table of Contents
 
@@ -228,15 +228,28 @@ Populate the following variables in `.env.local`:
 
 Never commit `.env.local`. Values prefixed with `NEXT_PUBLIC_` are included in browser code and must not contain secrets.
 
-### 3. Start the application
+### 3. Seed demo accounts and data
+
+```bash
+pnpm db:push
+pnpm db:seed
+```
+
+This populates the database with the initial location (`Harbor East`), schedule week, skill fixtures, and three role-specific demo accounts:
+
+| Role | Email | Password | Scope |
+| --- | --- | --- | --- |
+| **Admin** | `admin@shiftsync.local` | `ShiftSyncDemo!2026` | Cross-location oversight and scheduling workspace |
+| **Manager** | `manager@shiftsync.local` | `ShiftSyncDemo!2026` | Assigned location (`Harbor East`) schedule board |
+| **Staff** | `staff@shiftsync.local` | `ShiftSyncDemo!2026` | Own published shifts and timezone-aware agenda |
+
+### 4. Start the application
 
 ```bash
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
-
-Database migrations, deterministic seed data, and role-specific demo credentials will be added with the first product slices. Until then, Phase 0's live integration tests verify the Neon transaction and Pusher transport foundations.
+Open [http://localhost:3000](http://localhost:3000) to log in.
 
 ## Available Scripts
 
@@ -249,6 +262,7 @@ Database migrations, deterministic seed data, and role-specific demo credentials
 | `pnpm test` | Run Vitest in watch mode |
 | `pnpm test:run` | Run the Vitest suite once |
 | `pnpm test:coverage` | Run Vitest with coverage |
+| `pnpm db:seed` | Seed database with demo accounts and initial schedule week |
 | `pnpm db:generate` | Generate Drizzle migrations from the schema |
 | `pnpm db:migrate` | Apply generated migrations |
 | `pnpm db:push` | Push schema changes during development |
@@ -293,8 +307,7 @@ Additional operating rules:
 
 ## Current Limitations
 
-- Phase 0 proves the Neon transaction path, Pusher server transport, development tooling, and Harbor Calm design foundation; role and scheduling features are not yet implemented.
-- Pusher private-channel authorization and browser subscriptions are scheduled for the realtime implementation slice.
-- Database migrations, deterministic seed data, demo credentials, and the public deployment URL will be documented as their delivery slices complete.
+- Slice 1 delivers core identity, RBAC authorization, location-scoped manager boards, and staff published-schedule reads. Candidate constraint evaluation and transactional assignment are scheduled for Slice 2.
+- Pusher private-channel authorization and live browser invalidation are scheduled for Slice 5.
 - Automatic schedule generation is intentionally out of scope. ShiftSync assists human scheduling with constraints, alternatives, and evidence.
 - Email delivery is simulated, and external payroll, hardware clock, and geofencing integrations are out of scope.

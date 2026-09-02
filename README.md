@@ -2,7 +2,7 @@
 
 ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a fictional restaurant group operating four locations across two time zones. It helps managers build safe, fair schedules while giving staff a clear way to manage availability, swaps, drops, and shift coverage.
 
-> **Project status:** Slice 3 (Publication, Cutoff, Emergency Coverage, and Notifications) is complete. The system includes schedule week publication/unpublishing state transitions, configurable per-location cutoff enforcement, audited emergency coverage (`assignEmergencyCoverage`), availability risk flagging (`AT_RISK_AVAILABILITY`), a persisted notification center, outbox event insertion, and 36 passing tests across 10 test files.
+> **Project status:** Slice 4 (Coverage Request State Machines) is complete. The system includes full swap/drop state machines (`createSwapRequest`, `acceptSwapRequest`, `claimDropRequest`, `approveSwapRequest`, `approveDropRequest`, `cancelCoverageRequest`), 3-request pending limits, 24-hour drop expiration, atomic shift edit invalidation, one-for-one headcount credit, role-based coverage queues, and 43 passing tests across 13 test files.
 
 ## Table of Contents
 
@@ -307,8 +307,7 @@ Additional operating rules:
 
 ## Current Limitations
 
-- Slices 1, 2, and 3 deliver core identity, RBAC authorization, location-scoped manager boards, published-schedule staff reads, a pure constraint engine (`evaluateAssignment`), PostgreSQL row-level locked transactions (`assignStaff`), schedule week publication/unpublishing with cutoff enforcement, audited emergency coverage (`assignEmergencyCoverage`), non-destructive availability risk flagging (`AT_RISK_AVAILABILITY`), header notification center, and transactional outbox event insertion.
-- Coverage request state machines (swaps and drops) are scheduled for Slice 4.
+- Slices 1, 2, 3, and 4 deliver core identity, RBAC authorization, location-scoped manager boards, published-schedule staff reads, a pure constraint engine (`evaluateAssignment`), PostgreSQL row-level locked transactions (`assignStaff`), schedule week publication/unpublishing with cutoff enforcement, audited emergency coverage (`assignEmergencyCoverage`), non-destructive availability risk flagging (`AT_RISK_AVAILABILITY`), persisted notification center, transactional outbox event insertion, and coverage request state machines (`createSwapRequest`, `acceptSwapRequest`, `claimDropRequest`, `approveSwapRequest`, `approveDropRequest`, `cancelCoverageRequest`).
 - Pusher private-channel authorization and live browser invalidation are scheduled for Slice 5.
 - Automatic schedule generation is intentionally out of scope. ShiftSync assists human scheduling with constraints, alternatives, and evidence.
 - Email delivery is simulated, and external payroll, hardware clock, and geofencing integrations are out of scope.

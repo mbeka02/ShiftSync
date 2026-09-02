@@ -57,6 +57,19 @@ async function seed() {
     .onConflictDoUpdate({ target: [schema.scheduleWeeks.locationId, schema.scheduleWeeks.weekStartDate], set: { status: "published", publishedAt: new Date(), publishedBy: managerId, updatedAt: new Date() } }).returning({ id: schema.scheduleWeeks.id });
   const [skill] = await db.insert(schema.skills).values({ code: "server", name: "Server" })
     .onConflictDoUpdate({ target: schema.skills.code, set: { name: "Server", active: true } }).returning({ id: schema.skills.id });
+  await db.insert(schema.staffSkills).values({ staffId, skillId: skill.id, validFrom: "2025-01-01" }).onConflictDoNothing();
+  await db.insert(schema.staffLocationCertifications).values({ staffId, locationId: location.id, validFrom: "2025-01-01", status: "active" }).onConflictDoNothing();
+  const [availability] = await db.select({ id: schema.availabilityRules.id }).from(schema.availabilityRules).where(eq(schema.availabilityRules.staffId, staffId)).limit(1);
+  if (!availability) {
+    await db.insert(schema.availabilityRules).values(Array.from({ length: 7 }, (_, index) => ({
+      staffId,
+      weekday: index + 1,
+      startLocalTime: "06:00",
+      endLocalTime: "23:59",
+      timezone: TIMEZONE,
+      validFrom: "2025-01-01",
+    })));
+  }
 
   const [existingShift] = await db.select({ id: schema.shifts.id }).from(schema.shifts).where(eq(schema.shifts.scheduleWeekId, week.id)).limit(1);
   if (!existingShift) {
@@ -89,6 +102,29 @@ async function seed() {
     }
   }
 
+  const openStart = new Date(`${weekStart}T14:00:00Z`);
+  openStart.setUTCDate(openStart.getUTCDate() + 1);
+  const [openShift] = await db.select({ id: schema.shifts.id }).from(schema.shifts).where(and(eq(schema.shifts.scheduleWeekId, week.id), eq(schema.shifts.startsAt, openStart))).limit(1);
+  if (!openShift) {
+    const openEnd = new Date(openStart);
+    openEnd.setUTCHours(openEnd.getUTCHours() + 6);
+    const localStart = getLocalSnapshot(openStart, TIMEZONE);
+    const localEnd = getLocalSnapshot(openEnd, TIMEZONE);
+    await db.insert(schema.shifts).values({
+      scheduleWeekId: week.id,
+      locationId: location.id,
+      requiredSkillId: skill.id,
+      startsAt: openStart,
+      endsAt: openEnd,
+      timezone: TIMEZONE,
+      localStartDate: localStart.date,
+      localStartTime: localStart.time,
+      localEndDate: localEnd.date,
+      localEndTime: localEnd.time,
+      updatedBy: managerId,
+    });
+  }
+
   console.log(`Seeded Harbor East for week ${weekStart}.`);
   console.log("Admin:   admin@shiftsync.local");
   console.log("Manager: manager@shiftsync.local");
@@ -103,4 +139,3 @@ seed().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
-

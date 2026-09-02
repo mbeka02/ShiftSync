@@ -1,11 +1,17 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, date, index, integer, pgEnum, pgTable, primaryKey, text, time, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, customType, date, index, integer, pgEnum, pgTable, primaryKey, smallint, text, time, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { user } from "./auth";
 import { staffProfiles } from "./users";
 
 export const scheduleStatus = pgEnum("schedule_status", ["draft", "published"]);
 export const shiftStatus = pgEnum("shift_status", ["active", "cancelled"]);
 export const assignmentStatus = pgEnum("assignment_status", ["assigned", "removed", "cancelled"]);
+export const certificationStatus = pgEnum("certification_status", ["active", "suspended", "revoked"]);
+export const availabilityExceptionType = pgEnum("availability_exception_type", ["unavailable", "override"]);
+
+const tstzrange = customType<{ data: string; driverData: string }>({
+  dataType: () => "tstzrange",
+});
 
 export const locations = pgTable("locations", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -47,6 +53,57 @@ export const skills = pgTable("skills", {
   name: text("name").notNull(),
   active: boolean("active").default(true).notNull(),
 });
+
+export const staffSkills = pgTable("staff_skills", {
+  staffId: text("staff_id").notNull().references(() => staffProfiles.userId, { onDelete: "cascade" }),
+  skillId: uuid("skill_id").notNull().references(() => skills.id, { onDelete: "cascade" }),
+  validFrom: date("valid_from", { mode: "string" }).notNull(),
+  validTo: date("valid_to", { mode: "string" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.staffId, table.skillId, table.validFrom] }),
+  check("staff_skills_dates_check", sql`${table.validTo} is null or ${table.validTo} >= ${table.validFrom}`),
+]);
+
+export const staffLocationCertifications = pgTable("staff_location_certifications", {
+  staffId: text("staff_id").notNull().references(() => staffProfiles.userId, { onDelete: "cascade" }),
+  locationId: uuid("location_id").notNull().references(() => locations.id, { onDelete: "cascade" }),
+  validFrom: date("valid_from", { mode: "string" }).notNull(),
+  validTo: date("valid_to", { mode: "string" }),
+  status: certificationStatus("status").default("active").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.staffId, table.locationId, table.validFrom] }),
+  check("staff_certifications_dates_check", sql`${table.validTo} is null or ${table.validTo} >= ${table.validFrom}`),
+]);
+
+export const availabilityRules = pgTable("availability_rules", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  staffId: text("staff_id").notNull().references(() => staffProfiles.userId, { onDelete: "cascade" }),
+  weekday: smallint("weekday").notNull(),
+  startLocalTime: time("start_local_time").notNull(),
+  endLocalTime: time("end_local_time").notNull(),
+  timezone: text("timezone").notNull(),
+  validFrom: date("valid_from", { mode: "string" }).notNull(),
+  validTo: date("valid_to", { mode: "string" }),
+  active: boolean("active").default(true).notNull(),
+}, (table) => [
+  check("availability_rules_weekday_check", sql`${table.weekday} between 1 and 7`),
+  check("availability_rules_dates_check", sql`${table.validTo} is null or ${table.validTo} >= ${table.validFrom}`),
+  index("availability_rules_staff_idx").on(table.staffId),
+]);
+
+export const availabilityExceptions = pgTable("availability_exceptions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  staffId: text("staff_id").notNull().references(() => staffProfiles.userId, { onDelete: "cascade" }),
+  exceptionDate: date("exception_date", { mode: "string" }).notNull(),
+  type: availabilityExceptionType("type").notNull(),
+  startLocalTime: time("start_local_time"),
+  endLocalTime: time("end_local_time"),
+  timezone: text("timezone").notNull(),
+  reason: text("reason"),
+}, (table) => [index("availability_exceptions_staff_date_idx").on(table.staffId, table.exceptionDate)]);
 
 export const shifts = pgTable("shifts", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -91,3 +148,9 @@ export const assignments = pgTable("assignments", {
   index("assignments_staff_idx").on(table.staffId),
   check("assignments_override_reason_check", sql`not ${table.managerOverride} or ${table.overrideReason} is not null`),
 ]);
+
+export const assignmentPeriods = pgTable("assignment_periods", {
+  assignmentId: uuid("assignment_id").primaryKey().references(() => assignments.id, { onDelete: "cascade" }),
+  staffId: text("staff_id").notNull().references(() => staffProfiles.userId, { onDelete: "cascade" }),
+  workPeriod: tstzrange("work_period").notNull(),
+}, (table) => [index("assignment_periods_staff_idx").on(table.staffId)]);

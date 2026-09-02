@@ -7,6 +7,7 @@ import {
   scheduleWeeks,
   shifts,
   skills,
+  userProfiles,
 } from "@/server/db/schema";
 import type { EnrichedSession } from "@/server/auth/session";
 
@@ -39,7 +40,7 @@ export async function getScheduleForLocation(
     eq(scheduleWeeks.locationId, locationId),
     eq(scheduleWeeks.weekStartDate, weekStart),
   )).limit(1);
-  const weekShifts = week
+  const rawShifts = week
     ? await db.select({
         shiftId: shifts.id,
         startsAt: shifts.startsAt,
@@ -52,6 +53,19 @@ export async function getScheduleForLocation(
         .where(eq(shifts.scheduleWeekId, week.id))
         .orderBy(asc(shifts.startsAt))
     : [];
+  const assignedStaff = week ? await db.select({
+    shiftId: assignments.shiftId,
+    staffId: assignments.staffId,
+    firstName: userProfiles.firstName,
+    lastName: userProfiles.lastName,
+  }).from(assignments)
+    .innerJoin(shifts, eq(assignments.shiftId, shifts.id))
+    .innerJoin(userProfiles, eq(assignments.staffId, userProfiles.userId))
+    .where(and(eq(shifts.scheduleWeekId, week.id), eq(assignments.status, "assigned"))) : [];
+  const weekShifts = rawShifts.map((shift) => {
+    const assignees = assignedStaff.filter((assignment) => assignment.shiftId === shift.shiftId);
+    return { ...shift, assignees, openHeadcount: Math.max(0, shift.headcount - assignees.length) };
+  });
 
   return {
     success: true as const,

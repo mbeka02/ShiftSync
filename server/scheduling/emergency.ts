@@ -56,12 +56,16 @@ export async function assignEmergencyCoverage(command: EmergencyCoverageCommand,
         entityId: assignment.id,
         afterState: { assignmentId: assignment.id, shiftId: command.shiftId, staffId: command.staffId, reason },
       });
+      const [week] = await client.select({ weekStartDate: scheduleWeeks.weekStartDate })
+        .from(scheduleWeeks)
+        .where(eq(scheduleWeeks.id, loaded.shift.scheduleWeekId))
+        .limit(1);
       await tx.insert(notifications).values({
         userId: command.staffId,
         type: "EMERGENCY_COVERAGE_ASSIGNED",
         title: "Emergency coverage assigned",
         message: "You have been assigned emergency coverage. Review the shift details before service.",
-        link: `/schedule?shift=${command.shiftId}`,
+        link: `/schedule?week=${week?.weekStartDate ?? ""}&shift=${command.shiftId}#shift-${command.shiftId}`,
       });
       const eventId = randomUUID();
       await tx.insert(outboxEvents).values({

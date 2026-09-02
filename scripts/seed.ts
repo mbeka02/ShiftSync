@@ -125,7 +125,7 @@ async function seed() {
     });
   }
 
-  const [seedAssignment] = await db.select({ id: schema.assignments.id, riskFlags: schema.assignments.riskFlags })
+  const [seedAssignment] = await db.select({ id: schema.assignments.id, shiftId: schema.shifts.id, riskFlags: schema.assignments.riskFlags })
     .from(schema.assignments)
     .innerJoin(schema.shifts, eq(schema.assignments.shiftId, schema.shifts.id))
     .where(and(eq(schema.shifts.scheduleWeekId, week.id), eq(schema.assignments.status, "assigned")))
@@ -139,14 +139,19 @@ async function seed() {
     eq(schema.notifications.userId, managerId),
     eq(schema.notifications.type, "ASSIGNMENT_AT_RISK"),
   )).limit(1);
+  const managerNoticeValues = {
+    title: "Assignment needs coverage review",
+    message: "Maria Chen’s updated availability no longer covers one assigned shift.",
+    link: seedAssignment ? `/schedule?week=${weekStart}&location=${location.id}&shift=${seedAssignment.shiftId}#shift-${seedAssignment.shiftId}` : `/schedule?week=${weekStart}&location=${location.id}#schedule-content`,
+  };
   if (!managerNotice) {
     await db.insert(schema.notifications).values({
       userId: managerId,
       type: "ASSIGNMENT_AT_RISK",
-      title: "Assignment needs coverage review",
-      message: "Maria Chen’s updated availability no longer covers one assigned shift.",
-      link: `/schedule?week=${weekStart}&location=${location.id}`,
+      ...managerNoticeValues,
     });
+  } else {
+    await db.update(schema.notifications).set(managerNoticeValues).where(eq(schema.notifications.id, managerNotice.id));
   }
 
   const [staffNotice] = await db.select({ id: schema.notifications.id }).from(schema.notifications).where(and(
@@ -159,7 +164,7 @@ async function seed() {
       type: "SCHEDULE_PUBLISHED",
       title: "Schedule published",
       message: `Your schedule for the week of ${weekStart} is ready.`,
-      link: `/schedule?week=${weekStart}`,
+      link: `/schedule?week=${weekStart}#schedule-content`,
     });
   }
 

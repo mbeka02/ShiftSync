@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
 import type { getAssignmentCandidates } from "@/server/scheduling/candidates";
 import { CandidateDrawer } from "@/components/shift-sync/candidate-drawer";
@@ -19,20 +19,19 @@ type ShiftCardData = {
   assignees: Array<{ firstName: string; lastName: string; riskFlags: string[] }>;
 };
 
-export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, loadCandidates }: {
+export function ShiftAssignmentCard({ shift, timezone, loadCandidates }: {
   shift: ShiftCardData;
   timezone: string;
-  initiallyOpen?: boolean;
   loadCandidates: (shiftId: string) => Promise<CandidateLoadResult>;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const requestId = useRef(0);
   const openedFromCard = useRef(false);
-  const initialLoadStarted = useRef(false);
-  const [open, setOpen] = useState(initiallyOpen);
-  const [loading, setLoading] = useState(initiallyOpen);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<CandidateData | null>(null);
+  const open = searchParams.get("shift") === shift.shiftId;
 
   const load = useCallback(async () => {
     const currentRequest = ++requestId.current;
@@ -54,32 +53,10 @@ export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, lo
   }, [loadCandidates, shift.shiftId]);
 
   useEffect(() => {
-    if (!initiallyOpen || initialLoadStarted.current) return;
-    initialLoadStarted.current = true;
-    const currentRequest = ++requestId.current;
-    void loadCandidates(shift.shiftId).then((result) => {
-      if (currentRequest !== requestId.current) return;
-      if (result.success) setData(result.data);
-      else setError(result.error);
-      setLoading(false);
-    }).catch(() => {
-      if (currentRequest !== requestId.current) return;
-      setError("The schedule service did not respond. Try again in a moment.");
-      setLoading(false);
-    });
-  }, [initiallyOpen, loadCandidates, shift.shiftId]);
-
-  useEffect(() => {
-    function syncWithHistory() {
-      const selectedShift = new URLSearchParams(window.location.search).get("shift");
-      const nextOpen = selectedShift === shift.shiftId;
-      if (!nextOpen) openedFromCard.current = false;
-      setOpen(nextOpen);
-      if (nextOpen && !loading) void load();
-    }
-    window.addEventListener("popstate", syncWithHistory);
-    return () => window.removeEventListener("popstate", syncWithHistory);
-  }, [load, loading, shift.shiftId]);
+    if (!open || data || loading || error) return;
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [data, error, load, loading, open]);
 
   function updateUrl(nextOpen: boolean) {
     const url = new URL(window.location.href);
@@ -93,12 +70,10 @@ export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, lo
   function openDrawer() {
     openedFromCard.current = true;
     updateUrl(true);
-    setOpen(true);
     if (!loading) void load();
   }
 
   function closeDrawer() {
-    setOpen(false);
     if (openedFromCard.current) {
       openedFromCard.current = false;
       window.history.back();
@@ -116,10 +91,11 @@ export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, lo
   return (
     <>
       <button
+        id={`shift-${shift.shiftId}`}
         type="button"
         onClick={openDrawer}
         aria-label={`Assign staff to ${shift.skillName} shift`}
-        className={`block w-full border-l-2 bg-[var(--surface-subtle)] p-2.5 text-left transition-colors hover:bg-[var(--surface-inset)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${shift.openHeadcount > 0 ? "border-[var(--color-signal-coral)]" : "border-primary"}`}
+        className={`block w-full scroll-mt-6 border-l-2 bg-[var(--surface-subtle)] p-2.5 text-left transition-colors hover:bg-[var(--surface-inset)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${shift.openHeadcount > 0 ? "border-[var(--color-signal-coral)]" : "border-primary"}`}
       >
         <span className="block text-xs font-semibold">{shift.skillName}</span>
         <span className="mt-1 block font-mono text-[10px] text-muted-foreground">
@@ -147,7 +123,7 @@ export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, lo
             emergencyCoverageRequired: false,
           }}
           candidates={data?.candidates ?? []}
-          loading={loading}
+          loading={loading || (!data && !error)}
           error={error}
           onRetry={load}
           onOpenChange={(nextOpen) => { if (!nextOpen) closeDrawer(); }}

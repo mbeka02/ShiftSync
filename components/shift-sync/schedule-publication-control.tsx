@@ -38,15 +38,15 @@ export function SchedulePublicationControl({ weekId, status, version }: {
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-end gap-3">
-      <div className="text-right">
-        <span className={`inline-flex items-center gap-1.5 border px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.08em] ${publishing ? "border-[var(--border-strong)] bg-[var(--surface-subtle)] text-muted-foreground" : "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success-fg)]"}`}>
+    <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:justify-end">
+      <div className="flex h-9 items-stretch border border-[var(--border-strong)] bg-white">
+        <span className={`inline-flex items-center gap-1.5 border-r px-3 font-mono text-[10px] font-medium uppercase tracking-[0.08em] ${publishing ? "bg-[var(--surface-subtle)] text-muted-foreground" : "border-r-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success-fg)]"}`}>
           {publishing ? <CircleDashed className="size-3" /> : <CheckCircle2 className="size-3" />}
           {status}
         </span>
-        <p className="mt-1 font-mono text-[9px] text-muted-foreground">Version {version}</p>
+        <span className="inline-flex items-center px-3 font-mono text-[10px] text-muted-foreground">v{version}</span>
       </div>
-      <Button variant={publishing ? "default" : "outline"} onClick={() => { setBlockers([]); setOpen(true); }}>
+      <Button size="sm" variant={publishing ? "default" : "outline"} onClick={() => { setBlockers([]); setOpen(true); }}>
         {publishing ? "Publish schedule" : "Unpublish"}
       </Button>
 

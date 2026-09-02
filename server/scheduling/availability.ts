@@ -128,7 +128,7 @@ export async function updateStaffAvailability(staffId: string, rules: Availabili
         type: "ASSIGNMENT_AT_RISK",
         title: "Assignment needs coverage review",
         message: "A staff member’s updated availability no longer covers an assigned shift.",
-        link: `/schedule?week=${assignment.weekStartDate}&location=${assignment.locationId}&shift=${assignment.shiftId}`,
+        link: `/schedule?week=${assignment.weekStartDate}&location=${assignment.locationId}&shift=${assignment.shiftId}#shift-${assignment.shiftId}`,
       })));
     if (notificationRows.length) await tx.insert(notifications).values(notificationRows);
 

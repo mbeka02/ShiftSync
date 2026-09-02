@@ -47,6 +47,7 @@ async function seed() {
   await ensureUser({ email: "admin@shiftsync.local", firstName: "Avery", lastName: "Morgan", role: "admin" });
   const managerId = await ensureUser({ email: "manager@shiftsync.local", firstName: "Alex", lastName: "Rivera", role: "manager" });
   const staffId = await ensureUser({ email: "staff@shiftsync.local", firstName: "Maria", lastName: "Chen", role: "staff" });
+  const coverageStaffId = await ensureUser({ email: "coverage@shiftsync.local", firstName: "Jordan", lastName: "Lee", role: "staff" });
 
   const [location] = await db.insert(schema.locations).values({ name: "Harbor East", timezone: TIMEZONE })
     .onConflictDoUpdate({ target: schema.locations.name, set: { timezone: TIMEZONE, active: true } }).returning({ id: schema.locations.id });
@@ -57,18 +58,20 @@ async function seed() {
     .onConflictDoUpdate({ target: [schema.scheduleWeeks.locationId, schema.scheduleWeeks.weekStartDate], set: { status: "published", publishedAt: new Date(), publishedBy: managerId, updatedAt: new Date() } }).returning({ id: schema.scheduleWeeks.id });
   const [skill] = await db.insert(schema.skills).values({ code: "server", name: "Server" })
     .onConflictDoUpdate({ target: schema.skills.code, set: { name: "Server", active: true } }).returning({ id: schema.skills.id });
-  await db.insert(schema.staffSkills).values({ staffId, skillId: skill.id, validFrom: "2025-01-01" }).onConflictDoNothing();
-  await db.insert(schema.staffLocationCertifications).values({ staffId, locationId: location.id, validFrom: "2025-01-01", status: "active" }).onConflictDoNothing();
-  const [availability] = await db.select({ id: schema.availabilityRules.id }).from(schema.availabilityRules).where(eq(schema.availabilityRules.staffId, staffId)).limit(1);
-  if (!availability) {
-    await db.insert(schema.availabilityRules).values(Array.from({ length: 7 }, (_, index) => ({
-      staffId,
-      weekday: index + 1,
-      startLocalTime: "06:00",
-      endLocalTime: "23:59",
-      timezone: TIMEZONE,
-      validFrom: "2025-01-01",
-    })));
+  for (const qualifiedStaffId of [staffId, coverageStaffId]) {
+    await db.insert(schema.staffSkills).values({ staffId: qualifiedStaffId, skillId: skill.id, validFrom: "2025-01-01" }).onConflictDoNothing();
+    await db.insert(schema.staffLocationCertifications).values({ staffId: qualifiedStaffId, locationId: location.id, validFrom: "2025-01-01", status: "active" }).onConflictDoNothing();
+    const [availability] = await db.select({ id: schema.availabilityRules.id }).from(schema.availabilityRules).where(eq(schema.availabilityRules.staffId, qualifiedStaffId)).limit(1);
+    if (!availability) {
+      await db.insert(schema.availabilityRules).values(Array.from({ length: 7 }, (_, index) => ({
+        staffId: qualifiedStaffId,
+        weekday: index + 1,
+        startLocalTime: "06:00",
+        endLocalTime: "23:59",
+        timezone: TIMEZONE,
+        validFrom: "2025-01-01",
+      })));
+    }
   }
 
   const [existingShift] = await db.select({ id: schema.shifts.id }).from(schema.shifts).where(eq(schema.shifts.scheduleWeekId, week.id)).limit(1);
@@ -172,6 +175,7 @@ async function seed() {
   console.log("Admin:   admin@shiftsync.local");
   console.log("Manager: manager@shiftsync.local");
   console.log("Staff:   staff@shiftsync.local");
+  console.log("Coverage: coverage@shiftsync.local");
   console.log(`Password for all accounts: ${DEMO_PASSWORD}`);
 
   const { closePool } = await import("@/server/db/pool");

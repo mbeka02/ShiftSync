@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "@/server/db";
 import {
   assignments,
@@ -95,6 +95,8 @@ export async function getMySchedule(weekStart: string, actor: EnrichedSession) {
     locationTimezone: locations.timezone,
     skillName: skills.name,
     riskFlags: assignments.riskFlags,
+    canRequestSwap: sql<boolean>`${shifts.startsAt} > now()`,
+    canRequestDrop: sql<boolean>`${shifts.startsAt} > now() + interval '24 hours'`,
   }).from(assignments)
     .innerJoin(shifts, eq(assignments.shiftId, shifts.id))
     .innerJoin(scheduleWeeks, eq(shifts.scheduleWeekId, scheduleWeeks.id))

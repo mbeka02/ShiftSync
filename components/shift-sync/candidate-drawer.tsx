@@ -3,9 +3,11 @@
 import { useMemo, useState, useTransition } from "react";
 import { AlertTriangle, Check, Clock3, LoaderCircle, RefreshCw, ShieldX, UserRoundCheck } from "lucide-react";
 import { toast } from "sonner";
-import { assignStaffAction } from "@/app/(dashboard)/schedule/actions";
+import { assignEmergencyCoverageAction, assignStaffAction } from "@/app/(dashboard)/schedule/actions";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Textarea } from "@/components/ui/textarea";
 
 type Violation = { code: string; severity: "BLOCK" | "WARNING"; message: string; details: Record<string, unknown> };
 type Candidate = {
@@ -22,6 +24,7 @@ type DrawerShift = {
   startsAt: string;
   endsAt: string;
   timezone: string;
+  emergencyCoverageRequired: boolean;
 };
 
 const hiddenTechnicalDetails = new Set([
@@ -57,6 +60,7 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
 }) {
   const [selectedId, setSelectedId] = useState(candidates[0]?.staffId ?? null);
   const [serverBlockers, setServerBlockers] = useState<Violation[]>([]);
+  const [emergencyReason, setEmergencyReason] = useState("");
   const [pending, startTransition] = useTransition();
   const effectiveSelectedId = candidates.some((candidate) => candidate.staffId === selectedId)
     ? selectedId
@@ -76,13 +80,17 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
     if (!selected) return;
     setServerBlockers([]);
     startTransition(async () => {
-      const result = await assignStaffAction({ shiftId: shift.id, staffId: selected.staffId });
+      const result = shift.emergencyCoverageRequired
+        ? await assignEmergencyCoverageAction({ shiftId: shift.id, staffId: selected.staffId, reason: emergencyReason })
+        : await assignStaffAction({ shiftId: shift.id, staffId: selected.staffId });
       if (!result.success) {
         setServerBlockers(result.blockers);
         return;
       }
-      toast.success("Staff assigned", {
-        description: `${selected.name} was added to the ${shift.skillName} shift.`,
+      toast.success(shift.emergencyCoverageRequired ? "Emergency coverage assigned" : "Staff assigned", {
+        description: shift.emergencyCoverageRequired
+          ? `${selected.name} was assigned to the ${shift.skillName} shift and notified.`
+          : `${selected.name} was added to the ${shift.skillName} shift.`,
       });
       onAssigned();
     });
@@ -92,7 +100,7 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="!w-full sm:!max-w-2xl lg:!max-w-3xl" side="right" aria-busy={loading}>
         <SheetHeader className="border-b px-5 py-5 pr-14 sm:px-6">
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">Assignment preview</p>
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">{shift.emergencyCoverageRequired ? "Audited emergency coverage" : "Assignment preview"}</p>
           <SheetTitle className="text-2xl">Choose staff</SheetTitle>
           <SheetDescription>
             <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
@@ -195,14 +203,30 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
                     </p>
                   ) : null}
                 </div>
+                {shift.emergencyCoverageRequired ? (
+                  <div className="mt-5 border-l-2 border-[var(--warning-border)] bg-[var(--warning-bg)] p-3">
+                    <p className="text-xs font-semibold text-[var(--warning-fg)]">Inside the edit cutoff</p>
+                    <p className="mt-1 text-xs leading-5 text-[var(--text-default)]">Coverage is allowed, but the reason becomes part of the audit history.</p>
+                    <Label htmlFor="emergency-reason" className="mt-3 block text-xs">Emergency reason</Label>
+                    <Textarea
+                      id="emergency-reason"
+                      value={emergencyReason}
+                      onChange={(event) => setEmergencyReason(event.target.value)}
+                      placeholder="Example: last-minute call-out"
+                      className="mt-1 min-h-20 bg-white px-2"
+                      maxLength={240}
+                    />
+                    <p className="mt-1 text-right font-mono text-[9px] text-muted-foreground">{emergencyReason.length}/240</p>
+                  </div>
+                ) : null}
               </>
             ) : null}
           </aside>
         </div>
 
         <SheetFooter className="border-t bg-white px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
-          <Button onClick={assign} disabled={loading || Boolean(error) || !selected || Boolean(selected.blockers.length) || pending}>
-            {loading ? "Reviewing candidates…" : pending ? "Rechecking schedule…" : selected ? `Assign ${selected.name}` : "Select staff"}
+          <Button onClick={assign} disabled={loading || Boolean(error) || !selected || Boolean(selected.blockers.length) || pending || (shift.emergencyCoverageRequired && !emergencyReason.trim())}>
+            {loading ? "Reviewing candidates…" : pending ? "Rechecking schedule…" : selected ? shift.emergencyCoverageRequired ? "Assign emergency coverage" : `Assign ${selected.name}` : "Select staff"}
           </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
         </SheetFooter>

@@ -125,6 +125,44 @@ async function seed() {
     });
   }
 
+  const [seedAssignment] = await db.select({ id: schema.assignments.id, riskFlags: schema.assignments.riskFlags })
+    .from(schema.assignments)
+    .innerJoin(schema.shifts, eq(schema.assignments.shiftId, schema.shifts.id))
+    .where(and(eq(schema.shifts.scheduleWeekId, week.id), eq(schema.assignments.status, "assigned")))
+    .limit(1);
+  if (seedAssignment && !seedAssignment.riskFlags.includes("AT_RISK_AVAILABILITY")) {
+    await db.update(schema.assignments).set({ riskFlags: [...seedAssignment.riskFlags, "AT_RISK_AVAILABILITY"], updatedAt: new Date() })
+      .where(eq(schema.assignments.id, seedAssignment.id));
+  }
+
+  const [managerNotice] = await db.select({ id: schema.notifications.id }).from(schema.notifications).where(and(
+    eq(schema.notifications.userId, managerId),
+    eq(schema.notifications.type, "ASSIGNMENT_AT_RISK"),
+  )).limit(1);
+  if (!managerNotice) {
+    await db.insert(schema.notifications).values({
+      userId: managerId,
+      type: "ASSIGNMENT_AT_RISK",
+      title: "Assignment needs coverage review",
+      message: "Maria Chen’s updated availability no longer covers one assigned shift.",
+      link: `/schedule?week=${weekStart}&location=${location.id}`,
+    });
+  }
+
+  const [staffNotice] = await db.select({ id: schema.notifications.id }).from(schema.notifications).where(and(
+    eq(schema.notifications.userId, staffId),
+    eq(schema.notifications.type, "SCHEDULE_PUBLISHED"),
+  )).limit(1);
+  if (!staffNotice) {
+    await db.insert(schema.notifications).values({
+      userId: staffId,
+      type: "SCHEDULE_PUBLISHED",
+      title: "Schedule published",
+      message: `Your schedule for the week of ${weekStart} is ready.`,
+      link: `/schedule?week=${weekStart}`,
+    });
+  }
+
   console.log(`Seeded Harbor East for week ${weekStart}.`);
   console.log("Admin:   admin@shiftsync.local");
   console.log("Manager: manager@shiftsync.local");

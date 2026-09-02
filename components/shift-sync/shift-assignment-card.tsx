@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AlertTriangle } from "lucide-react";
 import type { getAssignmentCandidates } from "@/server/scheduling/candidates";
 import { CandidateDrawer } from "@/components/shift-sync/candidate-drawer";
 
@@ -14,7 +15,8 @@ type ShiftCardData = {
   startsAt: string;
   endsAt: string;
   openHeadcount: number;
-  assignees: Array<{ firstName: string; lastName: string }>;
+  riskFlags: string[];
+  assignees: Array<{ firstName: string; lastName: string; riskFlags: string[] }>;
 };
 
 export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, loadCandidates }: {
@@ -126,6 +128,11 @@ export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, lo
         <span className="mt-1 block truncate text-[11px]">
           {shift.assignees.length ? shift.assignees.map((person) => `${person.firstName} ${person.lastName}`).join(", ") : "Select staff"}
         </span>
+        {shift.riskFlags.some((flag) => flag === "AT_RISK_AVAILABILITY" || flag === "AT_RISK_CERTIFICATION") ? (
+          <span className="mt-2 inline-flex items-center gap-1 font-mono text-[9px] font-medium uppercase tracking-[0.08em] text-[var(--warning-fg)]">
+            <AlertTriangle className="size-3" /> At risk
+          </span>
+        ) : null}
       </button>
 
       {open ? (
@@ -137,6 +144,7 @@ export function ShiftAssignmentCard({ shift, timezone, initiallyOpen = false, lo
             startsAt: shift.startsAt,
             endsAt: shift.endsAt,
             timezone,
+            emergencyCoverageRequired: false,
           }}
           candidates={data?.candidates ?? []}
           loading={loading}

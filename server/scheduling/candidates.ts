@@ -4,6 +4,8 @@ import {
   assignments,
   availabilityExceptions,
   availabilityRules,
+  locations,
+  scheduleWeeks,
   shifts,
   skills,
   staffLocationCertifications,
@@ -32,8 +34,12 @@ export async function getAssignmentCandidates(shiftId: string, actor: EnrichedSe
     skillName: skills.name,
     localStartDate: shifts.localStartDate,
     headcount: shifts.headcount,
+    weekStatus: scheduleWeeks.status,
+    cutoffMinutes: locations.schedulingCutoffMinutes,
   }).from(shifts)
     .innerJoin(skills, eq(shifts.requiredSkillId, skills.id))
+    .innerJoin(scheduleWeeks, eq(shifts.scheduleWeekId, scheduleWeeks.id))
+    .innerJoin(locations, eq(shifts.locationId, locations.id))
     .where(and(eq(shifts.id, shiftId), eq(shifts.status, "active")))
     .limit(1);
   if (!shift) return null;
@@ -65,6 +71,7 @@ export async function getAssignmentCandidates(shiftId: string, actor: EnrichedSe
         timezone: shift.timezone,
         startsAt: shift.startsAt.toISOString(),
         endsAt: shift.endsAt.toISOString(),
+        emergencyCoverageRequired: shift.weekStatus === "published" && shift.startsAt.getTime() - Date.now() < shift.cutoffMinutes * 60_000,
       },
       candidates: [],
     };
@@ -174,6 +181,7 @@ export async function getAssignmentCandidates(shiftId: string, actor: EnrichedSe
       timezone: shift.timezone,
       startsAt: shift.startsAt.toISOString(),
       endsAt: shift.endsAt.toISOString(),
+      emergencyCoverageRequired: shift.weekStatus === "published" && shift.startsAt.getTime() - Date.now() < shift.cutoffMinutes * 60_000,
     },
     candidates,
   };

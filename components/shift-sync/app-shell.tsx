@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CalendarDays, MapPin, ShieldCheck, UsersRound, UtensilsCrossed } from "lucide-react";
 import { SignOutButton } from "./sign-out-button";
+import { NotificationCenter } from "./notification-center";
 
 type Props = {
   children: React.ReactNode;
@@ -8,9 +9,10 @@ type Props = {
   role: string;
   locationName: string;
   timezone: string;
+  notifications: Array<{ id: string; type: string; title: string; message: string; read: boolean; link: string | null; createdAt: string }>;
 };
 
-export function AppShell({ children, name, role, locationName, timezone }: Props) {
+export function AppShell({ children, name, role, locationName, timezone, notifications }: Props) {
   const manager = role === "manager" || role === "admin";
   const nav = [
     { label: "Schedule", icon: CalendarDays, active: true },
@@ -25,7 +27,7 @@ export function AppShell({ children, name, role, locationName, timezone }: Props
         <div className="border-t border-sidebar-border p-3"><div className="px-3 py-3"><p className="truncate text-sm font-semibold">{name}</p><p className="mt-0.5 text-xs capitalize text-white/55">{role}</p></div><SignOutButton /></div>
       </aside>
       <div className="min-w-0 pb-16 md:pb-0">
-        <header className="flex min-h-16 items-center justify-between border-b bg-white px-4 sm:px-6 lg:px-8"><div className="min-w-0"><p className="flex items-center gap-2 truncate text-sm font-semibold"><MapPin className="size-4 text-primary" />{locationName}</p><p className="ml-6 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">{timezone}</p></div><span className="hidden items-center gap-2 text-xs font-medium text-muted-foreground sm:flex"><UtensilsCrossed className="size-4" />Service workspace</span></header>
+        <header className="flex min-h-16 items-center justify-between border-b bg-white px-4 sm:px-6 lg:px-8"><div className="min-w-0"><p className="flex items-center gap-2 truncate text-sm font-semibold"><MapPin className="size-4 text-primary" />{locationName}</p><p className="ml-6 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">{timezone}</p></div><div className="flex items-center gap-2"><span className="hidden items-center gap-2 text-xs font-medium text-muted-foreground sm:flex"><UtensilsCrossed className="size-4" />Service workspace</span><NotificationCenter notifications={notifications} /></div></header>
         <main>{children}</main>
       </div>
       <nav aria-label="Mobile primary" className="fixed inset-x-0 bottom-0 z-20 flex h-16 items-center justify-around border-t bg-[var(--color-deep-water)] text-white md:hidden"><Link href="/schedule" className="flex min-h-11 min-w-20 flex-col items-center justify-center gap-1 text-xs font-semibold"><CalendarDays className="size-5" />Schedule</Link><div className="w-28"><SignOutButton /></div></nav>

@@ -2,7 +2,7 @@
 
 ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a fictional restaurant group operating four locations across two time zones. It helps managers build safe, fair schedules while giving staff a clear way to manage availability, swaps, drops, and shift coverage.
 
-> **Project status:** Slice 1 (Authentication, Role-Based Access Control, and Published Schedule Read) is complete. Users can authenticate with role-aware demo accounts, managers can view location-scoped schedule boards, and staff can inspect their published shifts under the Harbor Calm visual system.
+> **Project status:** Slice 2 (Candidate Preview and Transactional Assignment) is complete. The system includes a pure constraint engine (`evaluateAssignment`), PostgreSQL row-level locked transactions (`assignStaff`), a GiST range exclusion constraint (`assignment_periods`), manager candidate preview drawer with real-time labor impact metrics, and 27 passing tests across 7 test files.
 
 ## Table of Contents
 
@@ -307,7 +307,8 @@ Additional operating rules:
 
 ## Current Limitations
 
-- Slice 1 delivers core identity, RBAC authorization, location-scoped manager boards, and staff published-schedule reads. Candidate constraint evaluation and transactional assignment are scheduled for Slice 2.
+- Slices 1 and 2 deliver core identity, RBAC authorization, location-scoped manager boards, published-schedule staff reads, a pure constraint engine (`evaluateAssignment`), PostgreSQL row-level locked transactions (`assignStaff`), a GiST range exclusion constraint (`assignment_periods`), and the manager candidate preview drawer.
+- Schedule publication cutoff enforcement, audited emergency coverage, and the notification center are scheduled for Slice 3.
 - Pusher private-channel authorization and live browser invalidation are scheduled for Slice 5.
 - Automatic schedule generation is intentionally out of scope. ShiftSync assists human scheduling with constraints, alternatives, and evidence.
 - Email delivery is simulated, and external payroll, hardware clock, and geofencing integrations are out of scope.

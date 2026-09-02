@@ -11,7 +11,28 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts"],
-    testTimeout: 30_000,
+    // PostgreSQL integration tests exercise several real Neon transactions;
+    // allow for remote connection latency without weakening assertions.
+    testTimeout: 60_000,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "parallel-integration",
+          include: ["tests/**/*.test.ts"],
+          exclude: ["tests/emergency-coverage.test.ts"],
+          sequence: { groupOrder: 0 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "isolated-global-state",
+          include: ["tests/emergency-coverage.test.ts"],
+          fileParallelism: false,
+          sequence: { groupOrder: 1 },
+        },
+      },
+    ],
   },
 });

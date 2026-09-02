@@ -5,7 +5,9 @@ import {
   assignmentPeriods,
   assignments,
   auditLogs,
+  coverageRequests,
   locations,
+  notifications,
   outboxEvents,
   scheduleWeeks,
   shifts,
@@ -124,6 +126,7 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
       shift: shifts,
       weekStatus: scheduleWeeks.status,
       weekVersion: scheduleWeeks.version,
+      weekStartDate: scheduleWeeks.weekStartDate,
       cutoffMinutes: locations.schedulingCutoffMinutes,
     }).from(shifts)
       .innerJoin(scheduleWeeks, eq(shifts.scheduleWeekId, scheduleWeeks.id))
@@ -191,6 +194,96 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
         })));
       }
     }
+
+    const pendingCoverageStatuses = ["open", "pending_target", "accepted_by_target", "claimed"] as const;
+    await tx.execute(sql`
+      select id from coverage_requests
+      where shift_id = ${current.shift.id}
+        and status in ('open', 'pending_target', 'accepted_by_target', 'claimed')
+      order by id
+      for update
+    `);
+    const pendingCoverage = await client.select({
+      id: coverageRequests.id,
+      status: coverageRequests.status,
+      requesterStaffId: coverageRequests.requesterStaffId,
+      targetStaffId: coverageRequests.targetStaffId,
+      claimantStaffId: coverageRequests.claimantStaffId,
+    }).from(coverageRequests).where(and(
+      eq(coverageRequests.shiftId, current.shift.id),
+      inArray(coverageRequests.status, pendingCoverageStatuses),
+    ));
+    if (pendingCoverage.length) {
+      await tx.update(coverageRequests).set({
+        status: "cancelled",
+        cancelledAt: changedAt,
+        cancelReason: "Shift details changed",
+        version: sql`${coverageRequests.version} + 1`,
+      }).where(inArray(coverageRequests.id, pendingCoverage.map((request) => request.id)));
+
+      for (const request of pendingCoverage) {
+        const recipients = [...new Set([
+          request.requesterStaffId,
+          request.targetStaffId,
+          request.claimantStaffId,
+        ].filter((id): id is string => Boolean(id)))];
+        await tx.insert(auditLogs).values({
+          actorId: actor.session.user.id,
+          action: "COVERAGE_REQUEST_CANCELLED_SHIFT_EDIT",
+          entityType: "coverage_request",
+          entityId: request.id,
+          beforeState: { status: request.status },
+          afterState: { status: "cancelled", reason: "Shift details changed" },
+        });
+        if (recipients.length) {
+          await tx.insert(notifications).values(recipients.map((userId) => ({
+            userId,
+            type: "COVERAGE_REQUEST_CANCELLED",
+            title: "Coverage request cancelled",
+            message: "The shift details changed, so its pending coverage request was cancelled. Review the updated shift before requesting coverage again.",
+            link: `/schedule?week=${current.weekStartDate}&location=${locationId}&shift=${current.shift.id}#shift-${current.shift.id}`,
+          })));
+          await tx.insert(outboxEvents).values(recipients.map((userId) => {
+            const eventId = randomUUID();
+            return {
+              id: eventId,
+              channel: `private-user-${userId}`,
+              event: "coverage.cancelled",
+              payload: {
+                eventId,
+                coverageRequestId: request.id,
+                shiftId: current.shift.id,
+                status: "cancelled",
+                reason: "shift-edited",
+              },
+            };
+          }));
+        }
+      }
+    }
+
+    await tx.insert(auditLogs).values({
+      actorId: actor.session.user.id,
+      action: "SHIFT_UPDATED",
+      entityType: "shift",
+      entityId: current.shift.id,
+      beforeState: {
+        startsAt: current.shift.startsAt.toISOString(),
+        endsAt: current.shift.endsAt.toISOString(),
+        locationId: current.shift.locationId,
+        requiredSkillId: current.shift.requiredSkillId,
+        headcount: current.shift.headcount,
+        version: current.shift.version,
+      },
+      afterState: {
+        startsAt: startsAt.toISOString(),
+        endsAt: endsAt.toISOString(),
+        locationId,
+        requiredSkillId,
+        headcount,
+        version: current.shift.version + 1,
+      },
+    });
     await tx.update(scheduleWeeks).set({ version: sql`${scheduleWeeks.version} + 1`, updatedAt: changedAt }).where(eq(scheduleWeeks.id, current.shift.scheduleWeekId));
     return { success: true as const, shiftId: current.shift.id };
   });

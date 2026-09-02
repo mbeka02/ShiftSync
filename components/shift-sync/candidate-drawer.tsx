@@ -1,8 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, Clock3, ShieldX, UserRoundCheck } from "lucide-react";
+import { AlertTriangle, Check, Clock3, LoaderCircle, RefreshCw, ShieldX, UserRoundCheck } from "lucide-react";
 import { toast } from "sonner";
 import { assignStaffAction } from "@/app/(dashboard)/schedule/actions";
 import { Button } from "@/components/ui/button";
@@ -46,16 +45,24 @@ const detailLabels: Record<string, string> = {
   warningThresholdHours: "Warning begins",
 };
 
-export function CandidateDrawer({ shift, candidates, returnHref }: {
+export function CandidateDrawer({ open, shift, candidates, loading, error, onRetry, onOpenChange, onAssigned }: {
+  open: boolean;
   shift: DrawerShift;
   candidates: Candidate[];
-  returnHref: string;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+  onOpenChange: (open: boolean) => void;
+  onAssigned: () => void;
 }) {
-  const router = useRouter();
   const [selectedId, setSelectedId] = useState(candidates[0]?.staffId ?? null);
   const [serverBlockers, setServerBlockers] = useState<Violation[]>([]);
   const [pending, startTransition] = useTransition();
-  const selected = useMemo(() => candidates.find((candidate) => candidate.staffId === selectedId), [candidates, selectedId]);
+  const effectiveSelectedId = candidates.some((candidate) => candidate.staffId === selectedId)
+    ? selectedId
+    : candidates[0]?.staffId ?? null;
+  const selected = useMemo(() => candidates.find((candidate) => candidate.staffId === effectiveSelectedId), [candidates, effectiveSelectedId]);
+
   const time = new Date(shift.startsAt).toLocaleString("en-US", {
     weekday: "short",
     month: "short",
@@ -72,20 +79,18 @@ export function CandidateDrawer({ shift, candidates, returnHref }: {
       const result = await assignStaffAction({ shiftId: shift.id, staffId: selected.staffId });
       if (!result.success) {
         setServerBlockers(result.blockers);
-        router.refresh();
         return;
       }
       toast.success("Staff assigned", {
         description: `${selected.name} was added to the ${shift.skillName} shift.`,
       });
-      router.replace(returnHref);
-      router.refresh();
+      onAssigned();
     });
   }
 
   return (
-    <Sheet open onOpenChange={(open) => { if (!open) router.replace(returnHref); }}>
-      <SheetContent className="!w-full sm:!max-w-2xl lg:!max-w-3xl" side="right">
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="!w-full sm:!max-w-2xl lg:!max-w-3xl" side="right" aria-busy={loading}>
         <SheetHeader className="border-b px-5 py-5 pr-14 sm:px-6">
           <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">Assignment preview</p>
           <SheetTitle className="text-2xl">Choose staff</SheetTitle>
@@ -103,10 +108,19 @@ export function CandidateDrawer({ shift, candidates, returnHref }: {
 
         <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_17rem]">
           <div className="min-w-0 overflow-y-auto border-b p-3 sm:p-4 md:border-r md:border-b-0">
-            <p className="mb-3 text-xs font-semibold text-muted-foreground">
-              {candidates.length} staff reviewed against the current schedule
-            </p>
-            <div className="space-y-2">
+            {loading ? <CandidateLoading /> : error ? (
+              <div className="border border-[var(--danger-border)] bg-[var(--danger-bg)] p-5" role="alert">
+                <p className="font-semibold text-[var(--danger-fg)]">Candidate review unavailable</p>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-default)]">{error}</p>
+                <Button className="mt-4" size="sm" variant="outline" onClick={onRetry}>
+                  <RefreshCw className="size-3.5" /> Try again
+                </Button>
+              </div>
+            ) : <>
+              <p className="mb-3 text-xs font-semibold text-muted-foreground">
+                {candidates.length} staff reviewed against the current schedule
+              </p>
+              <div className="space-y-2">
               {candidates.map((candidate) => {
                 const blocked = candidate.blockers.length > 0;
                 const warning = !blocked && candidate.warnings.length > 0;
@@ -116,7 +130,7 @@ export function CandidateDrawer({ shift, candidates, returnHref }: {
                     key={candidate.staffId}
                     type="button"
                     onClick={() => { setSelectedId(candidate.staffId); setServerBlockers([]); }}
-                    aria-pressed={candidate.staffId === selectedId}
+                    aria-pressed={candidate.staffId === effectiveSelectedId}
                     className="grid min-h-24 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 border bg-white p-3 text-left transition-colors hover:bg-[var(--surface-subtle)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:bg-[var(--surface-subtle)]"
                   >
                     <span className="min-w-0">
@@ -139,17 +153,24 @@ export function CandidateDrawer({ shift, candidates, returnHref }: {
                   </button>
                 );
               })}
-              {!candidates.length ? (
-                <div className="border border-dashed p-6 text-center">
-                  <p className="font-semibold">No staff profiles found</p>
-                  <p className="mt-1 text-xs text-muted-foreground">Add staff qualifications before assigning this shift.</p>
-                </div>
-              ) : null}
-            </div>
+                {!candidates.length ? (
+                  <div className="border border-dashed p-6 text-center">
+                    <p className="font-semibold">No staff profiles found</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Add staff qualifications before assigning this shift.</p>
+                  </div>
+                ) : null}
+              </div>
+            </>}
           </div>
 
           <aside className="min-w-0 overflow-y-auto bg-[var(--surface-subtle)] p-4 sm:p-5">
-            {selected ? (
+            {loading ? (
+              <div aria-live="polite">
+                <LoaderCircle className="size-5 animate-spin text-primary" />
+                <p className="mt-3 font-heading text-lg uppercase">Checking the schedule…</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">Qualifications, availability, rest, and projected hours are being evaluated.</p>
+              </div>
+            ) : selected ? (
               <>
                 <p className="font-heading text-lg uppercase">Impact ledger</p>
                 <p className="mt-1 break-words text-xs text-muted-foreground">{selected.name}</p>
@@ -180,13 +201,28 @@ export function CandidateDrawer({ shift, candidates, returnHref }: {
         </div>
 
         <SheetFooter className="border-t bg-white px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
-          <Button onClick={assign} disabled={!selected || Boolean(selected.blockers.length) || pending}>
-            {pending ? "Rechecking schedule…" : selected ? `Assign ${selected.name}` : "Select staff"}
+          <Button onClick={assign} disabled={loading || Boolean(error) || !selected || Boolean(selected.blockers.length) || pending}>
+            {loading ? "Reviewing candidates…" : pending ? "Rechecking schedule…" : selected ? `Assign ${selected.name}` : "Select staff"}
           </Button>
-          <Button variant="outline" onClick={() => router.replace(returnHref)} disabled={pending}>Cancel</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
         </SheetFooter>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function CandidateLoading() {
+  return (
+    <div className="space-y-3" aria-hidden>
+      <div className="h-3 w-48 animate-pulse bg-[var(--surface-inset)]" />
+      {[0, 1, 2].map((item) => (
+        <div key={item} className="border bg-white p-3">
+          <div className="h-3 w-2/5 animate-pulse bg-[var(--surface-inset)]" />
+          <div className="mt-3 h-2.5 w-3/4 animate-pulse bg-[var(--surface-inset)]" />
+          <div className="mt-2 h-2.5 w-full animate-pulse bg-[var(--surface-inset)]" />
+        </div>
+      ))}
+    </div>
   );
 }
 

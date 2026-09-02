@@ -1,12 +1,11 @@
 import { headers } from "next/headers";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { CalendarCheck2, CheckCircle2, Clock3, MapPin } from "lucide-react";
 import { getAuthenticatedUser } from "@/server/auth/session";
 import { getAccessibleLocations, getMySchedule, getScheduleForLocation } from "@/server/scheduling/queries";
-import { getAssignmentCandidates } from "@/server/scheduling/candidates";
 import { getLocalSnapshot } from "@/server/scheduling/time";
-import { CandidateDrawer } from "@/components/shift-sync/candidate-drawer";
+import { ShiftAssignmentCard } from "@/components/shift-sync/shift-assignment-card";
+import { loadAssignmentCandidatesAction } from "./actions";
 
 function mondayToday() {
   const date = new Date();
@@ -45,15 +44,11 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
   const result = selected ? await getScheduleForLocation(selected.id, weekStart, actor) : null;
   const shifts = result?.success ? result.data.shifts : [];
   const days = weekDays(weekStart);
-  const selectedShift = shifts.find((shift) => shift.shiftId === params.shift);
-  const candidateData = selectedShift ? await getAssignmentCandidates(selectedShift.shiftId, actor) : null;
-  const returnHref = selected ? `/schedule?week=${weekStart}&location=${selected.id}` : `/schedule?week=${weekStart}`;
   return <section className="px-4 py-6 sm:px-6 lg:px-8"><ScheduleHeading weekStart={weekStart} eyebrow="Manager board" title={selected?.name ?? "Schedule workspace"} />
     <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_18rem]"><div className="overflow-x-auto border bg-white"><div className="grid min-w-[760px] grid-cols-7">
-      {days.map((day) => <div key={day.iso} className="min-h-[28rem] border-r last:border-r-0"><div className="border-b bg-[var(--surface-subtle)] px-3 py-3"><p className="text-xs font-semibold uppercase tracking-[0.08em]">{day.day}</p><p className="font-mono text-[10px] text-muted-foreground">{day.date}</p></div><div className="space-y-2 p-2">{shifts.filter((shift) => selected && getLocalSnapshot(shift.startsAt, selected.timezone).date === day.iso).map((shift) => <Link key={shift.shiftId} href={`${returnHref}&shift=${shift.shiftId}`} aria-label={`Assign staff to ${shift.skillName} shift`} className={`block border-l-2 bg-[var(--surface-subtle)] p-2.5 transition-colors hover:bg-[var(--surface-inset)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${shift.openHeadcount > 0 ? "border-[var(--color-signal-coral)]" : "border-primary"}`}><p className="text-xs font-semibold">{shift.skillName}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{shift.startsAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: selected?.timezone })} · {shift.openHeadcount > 0 ? `${shift.openHeadcount} open` : "Covered"}</p><p className="mt-1 truncate text-[11px]">{shift.assignees.length ? shift.assignees.map((person) => `${person.firstName} ${person.lastName}`).join(", ") : "Select staff"}</p></Link>)}</div></div>)}
+      {days.map((day) => <div key={day.iso} className="min-h-[28rem] border-r last:border-r-0"><div className="border-b bg-[var(--surface-subtle)] px-3 py-3"><p className="text-xs font-semibold uppercase tracking-[0.08em]">{day.day}</p><p className="font-mono text-[10px] text-muted-foreground">{day.date}</p></div><div className="space-y-2 p-2">{shifts.filter((shift) => selected && getLocalSnapshot(shift.startsAt, selected.timezone).date === day.iso).map((shift) => selected ? <ShiftAssignmentCard key={shift.shiftId} shift={{ ...shift, startsAt: shift.startsAt.toISOString(), endsAt: shift.endsAt.toISOString() }} timezone={selected.timezone} initiallyOpen={params.shift === shift.shiftId} loadCandidates={loadAssignmentCandidatesAction} /> : null)}</div></div>)}
     </div></div><ServiceRail count={shifts.length} /></div>
     {!selected ? <div className="mt-6"><EmptySchedule message="No active locations are assigned to this account yet." /></div> : null}
-    {candidateData ? <CandidateDrawer shift={candidateData.shift} candidates={candidateData.candidates} returnHref={returnHref} /> : null}
   </section>;
 }
 

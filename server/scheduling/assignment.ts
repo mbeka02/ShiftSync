@@ -24,7 +24,7 @@ export type AssignmentCommand = {
 
 const hasRole = (actor: EnrichedSession, role: string) => actor.roles.some((entry) => entry.code === role);
 
-async function canManageLocation(client: typeof db, actor: EnrichedSession, locationId: string) {
+export async function canManageLocation(client: typeof db, actor: EnrichedSession, locationId: string) {
   if (hasRole(actor, "admin")) return true;
   if (!hasRole(actor, "manager")) return false;
   const today = new Date().toISOString().slice(0, 10);

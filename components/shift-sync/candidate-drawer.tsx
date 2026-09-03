@@ -61,11 +61,16 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
   const [selectedId, setSelectedId] = useState(candidates[0]?.staffId ?? null);
   const [serverBlockers, setServerBlockers] = useState<Violation[]>([]);
   const [emergencyReason, setEmergencyReason] = useState("");
+  const [overrideReason, setOverrideReason] = useState("");
   const [pending, startTransition] = useTransition();
   const effectiveSelectedId = candidates.some((candidate) => candidate.staffId === selectedId)
     ? selectedId
     : candidates[0]?.staffId ?? null;
   const selected = useMemo(() => candidates.find((candidate) => candidate.staffId === effectiveSelectedId), [candidates, effectiveSelectedId]);
+  const seventhDayOverride = Boolean(
+    selected?.blockers.length === 1
+    && selected.blockers[0]?.code === "SEVENTH_DAY_OVERRIDE_REQUIRED",
+  );
 
   const time = new Date(shift.startsAt).toLocaleString("en-US", {
     weekday: "short",
@@ -82,9 +87,17 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
     startTransition(async () => {
       const result = shift.emergencyCoverageRequired
         ? await assignEmergencyCoverageAction({ shiftId: shift.id, staffId: selected.staffId, reason: emergencyReason })
-        : await assignStaffAction({ shiftId: shift.id, staffId: selected.staffId });
+        : await assignStaffAction({
+          shiftId: shift.id,
+          staffId: selected.staffId,
+          managerOverride: seventhDayOverride,
+          overrideReason: seventhDayOverride ? overrideReason : undefined,
+        });
       if (!result.success) {
         setServerBlockers(result.blockers);
+        toast.error("Assignment not saved", {
+          description: result.blockers[0]?.message ?? "The schedule changed before this assignment could be saved.",
+        });
         return;
       }
       toast.success(shift.emergencyCoverageRequired ? "Emergency coverage assigned" : "Staff assigned", {
@@ -137,7 +150,7 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
                   <button
                     key={candidate.staffId}
                     type="button"
-                    onClick={() => { setSelectedId(candidate.staffId); setServerBlockers([]); }}
+                    onClick={() => { setSelectedId(candidate.staffId); setServerBlockers([]); setOverrideReason(""); }}
                     aria-pressed={candidate.staffId === effectiveSelectedId}
                     className="grid min-h-24 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 border bg-white p-3 text-left transition-colors hover:bg-[var(--surface-subtle)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:bg-[var(--surface-subtle)]"
                   >
@@ -219,14 +232,30 @@ export function CandidateDrawer({ open, shift, candidates, loading, error, onRet
                     <p className="mt-1 text-right font-mono text-[9px] text-muted-foreground">{emergencyReason.length}/240</p>
                   </div>
                 ) : null}
+                {!shift.emergencyCoverageRequired && seventhDayOverride ? (
+                  <div className="mt-5 border-l-2 border-[var(--warning-border)] bg-[var(--warning-bg)] p-3">
+                    <p className="text-xs font-semibold text-[var(--warning-fg)]">Seventh consecutive day</p>
+                    <p className="mt-1 text-xs leading-5 text-[var(--text-default)]">This assignment needs a documented manager decision. The reason is stored with the assignment and audit history.</p>
+                    <Label htmlFor="seventh-day-override-reason" className="mt-3 block text-xs">Override reason</Label>
+                    <Textarea
+                      id="seventh-day-override-reason"
+                      value={overrideReason}
+                      onChange={(event) => setOverrideReason(event.target.value)}
+                      placeholder="Explain why the seventh-day assignment is necessary"
+                      className="mt-1 min-h-20 bg-white px-2"
+                      maxLength={500}
+                    />
+                    <p className="mt-1 text-right font-mono text-[9px] text-muted-foreground">{overrideReason.length}/500</p>
+                  </div>
+                ) : null}
               </>
             ) : null}
           </aside>
         </div>
 
         <SheetFooter className="border-t bg-white px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
-          <Button onClick={assign} disabled={loading || Boolean(error) || !selected || Boolean(selected.blockers.length) || pending || (shift.emergencyCoverageRequired && !emergencyReason.trim())}>
-            {loading ? "Reviewing candidates…" : pending ? "Rechecking schedule…" : selected ? shift.emergencyCoverageRequired ? "Assign emergency coverage" : `Assign ${selected.name}` : "Select staff"}
+          <Button onClick={assign} disabled={loading || Boolean(error) || !selected || (Boolean(selected.blockers.length) && !seventhDayOverride) || pending || (shift.emergencyCoverageRequired && !emergencyReason.trim()) || (seventhDayOverride && !overrideReason.trim())}>
+            {loading ? "Reviewing candidates…" : pending ? "Rechecking schedule…" : selected ? shift.emergencyCoverageRequired ? "Assign emergency coverage" : seventhDayOverride ? `Override and assign ${selected.name}` : `Assign ${selected.name}` : "Select staff"}
           </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
         </SheetFooter>

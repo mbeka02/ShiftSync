@@ -18,15 +18,16 @@ type NotificationItem = {
 };
 
 export function NotificationCenter({ notifications }: { notifications: NotificationItem[] }) {
-  const [items, setItems] = useState(notifications);
+  const [locallyRead, setLocallyRead] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+  const items = notifications.map((item) => locallyRead.has(item.id) ? { ...item, read: true } : item);
   const unread = items.filter((item) => !item.read).length;
 
   function markRead(id: string) {
     startTransition(async () => {
       const result = await markNotificationReadAction(id);
-      if (result.success) setItems((current) => current.map((item) => item.id === id ? { ...item, read: true } : item));
+      if (result.success) setLocallyRead((current) => new Set(current).add(id));
     });
   }
 

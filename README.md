@@ -1,51 +1,73 @@
 # ShiftSync
 
-ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a fictional restaurant group operating four locations across two time zones. It helps managers build safe, fair schedules while giving staff a clear way to manage availability, swaps, drops, and shift coverage.
+ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a fictional restaurant group operating four locations across Eastern and Pacific time. It helps managers build safe, explainable schedules while giving staff a clear path through coverage, notifications, and on-duty work.
 
-> **Project status:** Slice 4 (Coverage Request State Machines) is complete. The system includes full swap/drop state machines (`createSwapRequest`, `acceptSwapRequest`, `claimDropRequest`, `approveSwapRequest`, `approveDropRequest`, `cancelCoverageRequest`), 3-request pending limits, 24-hour drop expiration, atomic shift edit invalidation, one-for-one headcount credit, role-based coverage queues, and 43 passing tests across 13 test files.
+The project follows one central rule: PostgreSQL owns the truth. Every important mutation is authorized and revalidated in a transaction; realtime events tell clients when to refetch that committed state.
 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
 - [Key Features](#key-features)
+- [Demo Accounts](#demo-accounts)
 - [System Design](#system-design)
   - [Architecture](#architecture)
   - [Database Design](#database-design)
   - [Integrity and Concurrency](#integrity-and-concurrency)
 - [Tech Stack](#tech-stack)
 - [Installation and Setup](#installation-and-setup)
+  - [Neon Branch Isolation](#neon-branch-isolation)
+  - [Production Deployment](#production-deployment)
 - [Available Scripts](#available-scripts)
 - [Design Decisions and Assumptions](#design-decisions-and-assumptions)
 - [Evaluation Scenarios](#evaluation-scenarios)
-- [Current Limitations](#current-limitations)
+- [Known Limitations](#known-limitations)
 
 ## Project Overview
 
-Coastal Eats currently lacks a shared view of staffing across its locations. That leads to uncovered call-outs, avoidable overtime, uneven distribution of desirable shifts, and conflicts when managers schedule the same employee independently.
+Coastal Eats needs one reliable view of staffing across locations. Without it, call-outs go uncovered, overtime is discovered too late, premium shifts feel unfair, and separate managers can unknowingly compete for the same employee.
 
-ShiftSync creates one scheduling authority for three user groups:
+ShiftSync serves three roles:
 
-- **Admins** oversee every location and can review or export audit history.
-- **Managers** create and publish schedules for their assigned locations, evaluate staffing constraints, and approve coverage changes.
-- **Staff** view published shifts, maintain availability, request swaps or drops, claim open coverage, and receive notifications.
+- **Admins** have cross-location oversight, analytics, and audit export access.
+- **Managers** manage their assigned locations, create and publish schedules, evaluate candidates, approve or reject coverage requests, and monitor on-duty staff.
+- **Staff** see their published schedule, clock in and out, request swaps or drops, claim eligible coverage, and receive persisted notifications.
 
-The system favors correctness and explainability over automatic schedule generation. When an assignment cannot be made, the manager should see the exact rule that failed and qualified alternatives where possible.
+The system assists human schedulers rather than generating schedules automatically. Candidate previews expose the specific blockers, warnings, projected hours, and qualified alternatives behind each decision.
 
 ## Key Features
 
-- **Role-scoped access:** Admin, Manager, and Staff experiences with location-level authorization.
-- **Multi-location scheduling:** Weekly draft and published schedules with location-specific cutoffs and time zones.
-- **Explainable constraint enforcement:** Skill, certification, availability, overlap, minimum-rest, daily-hours, consecutive-day, and headcount checks.
-- **Candidate and what-if guidance:** Qualified alternatives and projected labor impact before an assignment is committed.
-- **Coverage workflows:** Shift swaps, drop requests, emergency replacements, approval states, expiry, and cancellation.
-- **Overtime and fairness analytics:** Weekly and daily hour warnings, projected overtime costs, desired-hours comparisons, and premium-shift distribution evidence.
-- **Realtime operations:** Live schedule invalidation, persisted notifications, concurrent-assignment conflict feedback, and an on-duty dashboard.
-- **Timezone-safe scheduling:** UTC scheduling authority with IANA time zones for location display, availability, DST, and overnight shifts.
-- **Auditable changes:** Append-only before/after records for material schedule and coverage mutations.
+- **Role- and location-scoped access** backed by Better Auth database sessions and server-side authorization.
+- **Multi-location weekly schedules** with manager location switching, week navigation, draft/published states, and a configurable edit cutoff.
+- **Explainable assignment checks** for skills, certification, availability, overlap, 10-hour rest, headcount, daily hours, weekly hours, and consecutive days.
+- **What-if candidate review** showing projected daily/weekly hours, overtime, work streaks, blockers, and warnings before commit.
+- **Manager shift controls** for timezone-safe creation and material edits, including audited seventh-day overrides and emergency coverage.
+- **Coverage state machines** for targeted swaps and open drops, with acceptance/claim, manager approval or rejection, cancellation, expiry, pending limits, and shift-edit invalidation.
+- **Overtime and fairness analytics** with threshold-causing assignment evidence, projected overtime premium, desired-hours deltas, and opportunity-normalized premium-shift allocation.
+- **Realtime operational updates** through authorized Pusher channels, transactional outbox retry, event deduplication, focus/reconnect refresh, and a 25-second visible-tab polling fallback.
+- **On-duty state** with one-open-entry enforcement, staff clock-in/out controls, and a live location dashboard.
+- **Persisted communication and audit evidence** with read/unread notifications, delivery preferences, append-only audit records, and role-scoped CSV export.
+- **Timezone-safe storage** using UTC instants as scheduling authority plus IANA timezone and local wall-clock snapshots for display and DST review.
+
+## Demo Accounts
+
+The deterministic seed creates four locations, two managers, twenty staff members, two schedule weeks per location, and fixtures for overtime, fairness, emergency coverage, coverage approval, on-duty state, historical certification, and concurrency.
+
+All demo accounts use the password **`ShiftSyncDemo!2026`**.
+
+| Role / scenario | Email | Useful scope |
+| --- | --- | --- |
+| Admin | `admin@shiftsync.local` | All four locations, analytics, and audit export |
+| East manager | `manager.east@shiftsync.local` | Harbor East and Midtown Table |
+| West manager | `manager.west@shiftsync.local` | Pacific Pier and Sunset Kitchen |
+| Staff — Maria Chen | `maria@shiftsync.local` | Published shifts and seeded drop workflow |
+| Staff — Jordan Lee | `coverage@shiftsync.local` | Coverage claim/acceptance workflow |
+| Staff — Casey Wright | `casey@shiftsync.local` | Accepted swap and Regret Swap workflow |
+
+The same credentials are intended for the public evaluation deployment. To restore deterministic passwords and fixtures locally, rerun the guarded development seed or rebuild command described below; both replace current development demo data.
 
 ## System Design
 
-ShiftSync uses a modular monolith: one Next.js application owns the role-aware interface, authenticated server entry points, scheduling domain services, integrations, and database access. PostgreSQL is the source of truth; Pusher distributes hints that prompt clients to refetch committed state.
+ShiftSync is a modular monolith. One Next.js application owns the Harbor Calm interface, authenticated entry points, domain services, persistence, and integration adapters. This keeps scheduling rules independent of React and ensures browser actions and tests exercise the same services.
 
 ### Architecture
 
@@ -58,24 +80,26 @@ flowchart TB
     end
 
     subgraph Browser
-        UI[Next.js React UI<br/>Harbor Calm + shadcn/ui]
-        RealtimeClient[Pusher client<br/>private channels]
+        UI[Role-aware Next.js UI<br/>Harbor Calm + shadcn/ui]
+        Refresh[Realtime refresh bridge<br/>dedupe + focus + 25s fallback]
     end
 
-    subgraph Application[Next.js on Vercel]
+    subgraph Application[Next.js application]
         Entry[Server Components<br/>Server Actions<br/>Route Handlers]
         Auth[Better Auth<br/>sessions + RBAC]
-        Domain[Domain Services<br/>scheduling + coverage + analytics]
-        Constraints[Constraint Engine<br/>blocks + warnings + alternatives]
-        Publisher[Realtime Publisher<br/>authorization + retry]
+        Domain[Domain services<br/>scheduling + coverage + reports + on-duty]
+        Constraints[Constraint engine<br/>blockers + warnings + impact]
+        Drain[Outbox delivery<br/>immediate attempt + bounded retry]
     end
 
-    subgraph Data
-        Postgres[(Neon PostgreSQL<br/>authoritative state)]
-        Outbox[(Transactional Outbox)]
+    subgraph Neon[Neon PostgreSQL]
+        Production[(production branch)]
+        Development[(development branch)]
+        Test[(test branch)]
+        Outbox[(transactional outbox)]
     end
 
-    Pusher[Pusher Channels]
+    Pusher[Pusher private channels]
 
     Admin --> UI
     Manager --> UI
@@ -84,20 +108,20 @@ flowchart TB
     Entry --> Auth
     Entry --> Domain
     Domain --> Constraints
-    Domain --> Postgres
+    Domain --> Development
+    Domain --> Production
     Domain --> Outbox
-    Outbox --> Publisher
-    Publisher --> Pusher
-    Pusher --> RealtimeClient
-    RealtimeClient --> UI
-    UI -. refetch authoritative state .-> Entry
+    Test -. isolated integration tests .-> Domain
+    Outbox --> Drain
+    Drain --> Pusher
+    Pusher --> Refresh
+    Refresh --> UI
+    Refresh -. refetch committed state .-> Entry
 ```
 
-Scheduling rules do not live in React components or transport handlers. Server Actions and Route Handlers delegate to shared domain services so previews and final mutations use the same rules.
+Pusher messages are invalidation hints, not alternate state. If delivery is delayed or a tab sleeps, reconnect, focus, and visible-tab polling still converge the interface on PostgreSQL.
 
 ### Database Design
-
-The conceptual entity model separates identity, qualification, availability, staffing demand, assignment state, workflow state, and history.
 
 ```mermaid
 erDiagram
@@ -105,15 +129,14 @@ erDiagram
     USER ||--o{ USER_ROLE : receives
     ROLE ||--o{ USER_ROLE : grants
     USER ||--o| STAFF_PROFILE : may_have
+    STAFF_PROFILE ||--o{ STAFF_COMPENSATION : has
 
     USER ||--o{ MANAGER_LOCATION : manages
     LOCATION ||--o{ MANAGER_LOCATION : authorizes
-
     STAFF_PROFILE ||--o{ STAFF_SKILL : holds
     SKILL ||--o{ STAFF_SKILL : qualifies
     STAFF_PROFILE ||--o{ STAFF_LOCATION_CERTIFICATION : holds
     LOCATION ||--o{ STAFF_LOCATION_CERTIFICATION : certifies
-
     STAFF_PROFILE ||--o{ AVAILABILITY_RULE : defines
     STAFF_PROFILE ||--o{ AVAILABILITY_EXCEPTION : overrides
 
@@ -121,7 +144,6 @@ erDiagram
     SCHEDULE_WEEK ||--o{ SHIFT : contains
     LOCATION ||--o{ SHIFT : hosts
     SKILL ||--o{ SHIFT : requires
-
     SHIFT ||--o{ ASSIGNMENT : fills
     STAFF_PROFILE ||--o{ ASSIGNMENT : works
     ASSIGNMENT ||--|| ASSIGNMENT_PERIOD : reserves
@@ -129,65 +151,56 @@ erDiagram
 
     SHIFT ||--o{ COVERAGE_REQUEST : concerns
     STAFF_PROFILE ||--o{ COVERAGE_REQUEST : participates
-    STAFF_PROFILE ||--o{ STAFF_COMPENSATION : has
-
     USER ||--o{ NOTIFICATION : receives
-    USER ||--|| NOTIFICATION_PREFERENCE : configures
-    USER ||--o{ AUDIT_EVENT : performs
+    USER ||--o| NOTIFICATION_PREFERENCE : configures
+    USER ||--o{ AUDIT_LOG : performs
 ```
 
-Better Auth additionally owns its `session`, `account`, and `verification` tables. They are omitted from the conceptual ERD to keep the scheduling relationships readable.
+Better Auth also owns `session`, `account`, and `verification`. They are omitted from the diagram to keep the scheduling relationships readable.
 
-| Domain | Tables | Purpose |
+| Domain | Tables | Responsibility |
 | --- | --- | --- |
-| Identity and access | `user`, `session`, `account`, `verification`, `user_profiles`, `roles`, `user_roles`, `staff_profiles` | Authentication, profiles, and application roles |
-| Locations and qualifications | `locations`, `manager_locations`, `skills`, `staff_skills`, `staff_location_certifications` | Management scope and time-bounded staff eligibility |
+| Identity and access | `user`, `session`, `account`, `verification`, `user_profiles`, `roles`, `user_roles`, `staff_profiles` | Authentication, user details, and application roles |
+| Locations and eligibility | `locations`, `manager_locations`, `skills`, `staff_skills`, `staff_location_certifications` | Manager scope and time-bounded staff qualification |
 | Availability | `availability_rules`, `availability_exceptions` | Recurring local-time windows and date-specific overrides |
-| Scheduling | `schedule_weeks`, `shifts`, `assignments`, `assignment_periods` | Publication state, staffing demand, and authoritative assignments |
-| Labor and fairness | `staff_compensation` plus assignment-derived projections | Overtime cost, desired hours, and premium-shift evidence |
-| Coverage | `coverage_requests` | Swap and drop state machines |
-| Operations | `time_entries` | Manual clock-in/out and live on-duty state |
-| Communication | `notifications`, `notification_preferences`, `outbox_events` | Durable notifications and reliable realtime publication |
-| Audit | `audit_events` | Append-only before/after history and admin export |
+| Scheduling | `schedule_weeks`, `shifts`, `assignments`, `assignment_periods` | Publication, staffing demand, active assignments, and overlap protection |
+| Coverage | `coverage_requests` | Swap/drop participants, state, expiry, cancellation, and approval |
+| Labor and operations | `staff_compensation`, `time_entries` | Overtime projection and open/closed on-duty entries |
+| Communication | `notifications`, `notification_preferences`, `outbox_events` | Durable user communication and reliable realtime delivery |
+| Evidence | `audit_logs` | Actor, location scope, reason, and before/after state for material actions |
 
-User identities generated by Better Auth use `text` keys. Scheduling entities such as locations, shifts, assignments, and requests use UUIDs.
+Better Auth identities use `text` IDs. Domain records such as locations, shifts, assignments, coverage requests, and time entries use UUIDs.
 
 ### Integrity and Concurrency
 
-The browser can preview a scheduling decision, but every mutation is revalidated inside a PostgreSQL transaction.
+Every mutation treats the browser preview as advisory and checks current database state again before committing.
 
-The assignment transaction:
+Key safeguards include:
 
-1. Locks the shift and affected staff scheduling rows in a deterministic order.
-2. Reloads current assignments and authorization state.
-3. Validates qualification, availability, overlap, rest, headcount, and labor rules.
-4. Commits the assignment, audit event, notification, and outbox event atomically.
-5. Publishes the committed event through Pusher after the transaction succeeds.
-
-Important database guarantees include:
-
-- A PostgreSQL range exclusion constraint prevents overlapping active assignments for the same staff member.
-- Shift-row locking prevents concurrent users from taking the same final headcount slot.
-- A unique location/week pair provides one publication authority per schedule week.
-- UTC instants are authoritative for overlap, duration, and rest calculations; IANA time zones preserve local intent and DST behavior.
-- Only one open time entry is allowed per assignment and staff member.
-- Audit records preserve historical truth even when current assignments, qualifications, or shifts change.
-- Realtime events are advisory; reconnecting clients refetch authoritative PostgreSQL state.
+- The assignment transaction locks the shift first and staff scheduling state in deterministic order before rerunning authorization and constraints.
+- A PostgreSQL range exclusion constraint prevents overlapping active assignments for one staff member, including across locations.
+- Shift row locking and in-transaction headcount checks allow exactly one winner for a final open position.
+- `schedule_weeks` enforces one `(location_id, week_start_date)` pair, and active assignments enforce one `(shift_id, staff_id)` pair.
+- Coverage approval locks shift → request → staff, keeps the original assignment active until approval commits, and atomically writes audit, notification, and outbox records.
+- Material shift edits revalidate current assignees and cancel attached pending coverage requests with notifications.
+- Partial unique indexes allow at most one open time entry per assignment and per staff member.
+- UTC instants govern overlap, duration, and rest. IANA timezones and local snapshots preserve the location-facing schedule through DST and overnight work.
+- Audit, notification, and outbox rows commit with their domain change; failed transactions leave no partial side effects.
 
 ## Tech Stack
 
 | Concern | Technology |
 | --- | --- |
 | Application | Next.js 16, React 19, TypeScript |
-| UI | Tailwind CSS 4, shadcn/ui, Base UI, Lucide |
-| Design direction | Harbor Calm design system |
+| UI | Tailwind CSS 4, shadcn/ui, Base UI, Lucide, Sonner |
+| Design | Harbor Calm design system |
 | Authentication | Better Auth with database sessions |
 | Database | Neon Serverless PostgreSQL |
-| Query and migrations | Drizzle ORM and Drizzle Kit |
-| Validation and forms | Zod, React Hook Form |
-| Realtime | Pusher Channels |
-| Testing | Vitest, Testing Library, Playwright |
-| Deployment target | Vercel |
+| Data access and migrations | Drizzle ORM and Drizzle Kit |
+| Validation and forms | Zod and React Hook Form |
+| Realtime | Pusher Channels plus visible-tab polling fallback |
+| Testing | Vitest, Testing Library, and Playwright |
+| Deployment | Vercel |
 
 ## Installation and Setup
 
@@ -195,7 +208,7 @@ Important database guarantees include:
 
 - Node.js 20.9 or newer
 - pnpm 11
-- A Neon PostgreSQL database
+- A Neon project with separate `development` and `test` branches
 - A Pusher Channels application
 
 ### 1. Clone and install
@@ -207,49 +220,75 @@ corepack enable
 pnpm install
 ```
 
-### 2. Configure the environment
+### 2. Configure development and test environments
 
 ```bash
 cp .env.example .env.local
+cp .env.test.example .env.test.local
 ```
 
-Populate the following variables in `.env.local`:
+Populate `.env.local` with development-branch credentials and `.env.test.local` with test-branch credentials.
 
-| Variable | Visibility | Purpose |
+| Variable | File / visibility | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | Server only | Pooled Neon connection for application queries |
-| `DATABASE_URL_UNPOOLED` | Server only | Direct Neon connection for migrations and administrative work |
-| `BETTER_AUTH_SECRET` | Server only | Better Auth signing secret |
+| `DATABASE_URL` | Server only | Pooled Neon URL for runtime queries |
+| `DATABASE_URL_UNPOOLED` | Server only | Direct Neon URL for migrations and administrative work |
+| `NEON_BRANCH` | Server-only safety label | Must be `development`, `test`, or `production` for the matching environment file |
+| `BETTER_AUTH_SECRET` | Server only | Better Auth signing secret; generate with `openssl rand -base64 32` |
 | `BETTER_AUTH_URL` | Server only | Application origin, such as `http://localhost:3000` |
-| `PUSHER_APP_ID` | Server only | Pusher application identifier |
+| `PUSHER_APP_ID` | Server only | Pusher application ID |
 | `PUSHER_SECRET` | Server only | Pusher signing secret |
-| `NEXT_PUBLIC_PUSHER_APP_KEY` | Public | Pusher browser application key, also reused by the server publisher |
-| `NEXT_PUBLIC_PUSHER_CLUSTER` | Public | Pusher cluster used by browser and server clients |
+| `NEXT_PUBLIC_PUSHER_APP_KEY` | Public | Pusher application key used by browser and server clients |
+| `NEXT_PUBLIC_PUSHER_CLUSTER` | Public | Pusher application cluster |
+| `OUTBOX_DRAIN_SECRET` | Server only | Bearer secret for the bounded internal retry endpoint |
 
-Never commit `.env.local`. Values prefixed with `NEXT_PUBLIC_` are included in browser code and must not contain secrets.
+The connection URL selects the actual Neon branch; `NEON_BRANCH` is a fail-closed label used by destructive scripts and tests. Never place a Pusher secret, database URL, or auth secret in a `NEXT_PUBLIC_` variable.
 
-### 3. Seed demo accounts and data
+### 3. Build the local development database
 
 ```bash
-pnpm db:push
-pnpm db:seed
+pnpm db:rebuild:development
 ```
 
-This populates the database with the initial location (`Harbor East`), schedule week, skill fixtures, and three role-specific demo accounts:
+This command **deletes and recreates the schemas on the configured development branch**, applies committed Drizzle migrations, and loads deterministic demo data. It refuses to run unless `.env.local` declares `NEON_BRANCH=development`.
 
-| Role | Email | Password | Scope |
-| --- | --- | --- | --- |
-| **Admin** | `admin@shiftsync.local` | `ShiftSyncDemo!2026` | Cross-location oversight and scheduling workspace |
-| **Manager** | `manager@shiftsync.local` | `ShiftSyncDemo!2026` | Assigned location (`Harbor East`) schedule board |
-| **Staff** | `staff@shiftsync.local` | `ShiftSyncDemo!2026` | Own published shifts and timezone-aware agenda |
+For an existing database whose data should be preserved, use `pnpm db:migrate` instead. Running `pnpm db:seed` directly also replaces demo data and is guarded to development by default.
 
-### 4. Start the application
+### 4. Verify and run
 
 ```bash
+pnpm db:verify-isolation
+pnpm db:verify-demo
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to log in.
+Open [http://localhost:3000](http://localhost:3000) and use one of the demo accounts above.
+
+### Neon Branch Isolation
+
+The project uses three long-lived Neon branches:
+
+| Neon branch | Local environment | Use |
+| --- | --- | --- |
+| `development` | `.env.local` | Local app, manual review, and Playwright fixtures |
+| `test` | `.env.test.local` | Vitest integration tests only |
+| `production` | Vercel variables; optional ignored `.env.production.local` for controlled bootstrap | Public evaluator deployment |
+
+`pnpm test:run` loads `.env.test.local` and fails before collection unless `NEON_BRANCH=test`. The isolation verifier writes a temporary marker to `test`, proves it is absent from `development`, and removes it afterward.
+
+`pnpm test:e2e:reset` is intentionally different: it rebuilds **development** before running the real browser scenarios, so do not use it while preserving manual changes on that branch.
+
+### Production Deployment
+
+Configure Vercel with the pooled and direct URLs for the Neon `production` branch, set `NEON_BRANCH=production`, and provide the production Better Auth, Pusher, and outbox secrets. Changing `NEON_BRANCH` alone does not switch databases—the two Neon URLs must also target production.
+
+Production bootstrap is a deliberately destructive, one-time operation:
+
+```bash
+ALLOW_PRODUCTION_BOOTSTRAP=I_UNDERSTAND_THIS_RESETS_PRODUCTION pnpm db:bootstrap:production
+```
+
+The command requires an ignored `.env.production.local`, drops both application and Drizzle migration schemas, reapplies migrations, and loads the public demo accounts. Do not run it against a production database containing user data. Normal releases should apply migrations without reseeding.
 
 ## Available Scripts
 
@@ -259,54 +298,68 @@ Open [http://localhost:3000](http://localhost:3000) to log in.
 | `pnpm build` | Create a production build |
 | `pnpm start` | Run the production build |
 | `pnpm lint` | Run ESLint |
-| `pnpm test` | Run Vitest in watch mode |
-| `pnpm test:run` | Run the Vitest suite once |
+| `pnpm test` | Run Vitest in watch mode using the guarded test environment |
+| `pnpm test:run [files…]` | Migrate the test branch and run the Vitest suite once |
 | `pnpm test:coverage` | Run Vitest with coverage |
-| `pnpm db:seed` | Seed database with demo accounts and initial schedule week |
-| `pnpm db:generate` | Generate Drizzle migrations from the schema |
-| `pnpm db:migrate` | Apply generated migrations |
-| `pnpm db:push` | Push schema changes during development |
+| `pnpm test:e2e` | Run Playwright against the current development data |
+| `pnpm test:e2e:reset` | Destructively rebuild development, then run all evaluator browser scenarios |
+| `pnpm db:generate` | Generate a Drizzle migration from schema changes |
+| `pnpm db:migrate` | Apply migrations using the selected local environment |
+| `pnpm db:migrate:test` | Apply migrations to the isolated test branch |
+| `pnpm db:push` | Push schema changes directly; intended only for deliberate development use |
+| `pnpm db:seed` | Replace deterministic demo data on an authorized branch |
+| `pnpm db:rebuild:development` | Reset, migrate, and seed the development branch |
+| `pnpm db:bootstrap:production` | Guarded destructive production reset, migration, and demo seed |
+| `pnpm db:test:reset` | Reset the isolated test schemas |
+| `pnpm db:verify-isolation` | Prove test writes are not visible in development |
+| `pnpm db:verify-demo` | Verify four locations, twenty staff, and documented logins |
 | `pnpm db:studio` | Open Drizzle Studio |
 
-The current spike tests call real Neon and Pusher services and therefore require valid local environment credentials.
+The integration and browser suites use real Neon transactions. Runtime depends on database region, compute wake-up, and network latency.
 
 ## Design Decisions and Assumptions
 
-The challenge deliberately leaves several behaviors open. ShiftSync adopts the following explicit rules:
+The challenge deliberately leaves five behaviors unspecified. ShiftSync makes each decision explicit:
 
 | Ambiguity | Decision | Reason |
 | --- | --- | --- |
-| Staff member is de-certified from a location | Preserve assignments and audit history. Block new assignments outside the certification window and flag affected future assignments as at risk. | Historical payroll, fairness, and audit evidence must remain stable. |
-| Desired hours conflict with availability | Availability is a hard constraint; desired hours are a soft planning and fairness target. | A preference must never override an employee's declared availability. |
-| Short shifts and consecutive days | Any day with at least one active shift counts as one worked day, regardless of shift duration. | This is deterministic and aligns with a day-count rule. |
-| Shift changes after an approved swap | Approval immediately makes the replacement assignment authoritative. A later material edit must revalidate the current assignee and is rejected if it creates an invalid schedule. | Approved work is not silently undone, and managers cannot edit around constraints. |
-| Location spans a timezone boundary | Each scheduling location has exactly one IANA timezone. A genuinely split location is represented as two logical scheduling locations. | Scheduling, payroll boundaries, availability, and calendar display require one local clock. |
+| Staff member is de-certified from a location | Preserve assignments and audit history. Block new assignments outside the certification window and flag affected future assignments as at risk. | Payroll, fairness, and historical evidence must not change when current eligibility changes. |
+| Desired hours conflict with availability | Availability is a hard constraint; desired hours are a soft planning and fairness target. | A staffing preference must never override declared availability. |
+| Short shifts and consecutive days | Any local calendar day containing an active shift counts as one worked day, whether the shift lasts one hour or eleven. | This is deterministic and matches a day-count rule rather than an hours proxy. |
+| Shift changes after an approved swap | Approval makes the replacement assignment authoritative. A later material edit revalidates the current assignee and is rejected if it would create an invalid schedule. | An approved transfer is not silently undone, and managers cannot edit around constraints. |
+| Location spans a timezone boundary | Each scheduling location has exactly one IANA timezone. A genuinely split site is modeled as two logical scheduling locations. | Availability, schedule display, payroll boundaries, and DST need one unambiguous local clock. |
 
 Additional operating rules:
 
-- Schedule and reporting weeks run from Monday 00:00 to the following Monday 00:00 in the employee's primary timezone.
-- Daily hours and consecutive days use the employee's primary timezone; shift display uses the location timezone.
-- A shift must fit completely inside an available interval. A one-off exception replaces the recurring rule for that local date.
-- An overnight shift remains one shift and is not split at midnight.
-- Friday and Saturday shifts starting at or after 17:00 in the location timezone are classified as premium when created.
-- The sixth consecutive day produces a warning. A seventh day requires a manager override with a documented reason.
-- The original assignment remains active throughout a pending swap or drop and changes only when manager approval commits.
-- Notifications are persisted in PostgreSQL. Email is simulated, and Pusher delivery is best-effort rather than authoritative.
-- On-duty state uses manual in-app time entries; external time clocks, geofencing, and payroll integrations are outside the assessment scope.
+- Work weeks begin Monday at 00:00 in the employee’s primary timezone; schedule display uses the shift location timezone.
+- A shift must fit entirely inside an availability interval. A one-off exception replaces the recurring rule for that local date.
+- Overnight work remains one shift even when the local end date is the following day.
+- Friday and Saturday evening shifts are premium opportunities when tagged by the manager or seed.
+- Weekly hours warn at 35, overtime begins after 40, daily hours warn after 8, and daily hours above 12 are blocked.
+- A sixth consecutive day warns. A seventh requires an authorized manager override with a stored reason.
+- A drop expires 24 hours before its shift if still unclaimed; one staff member may have at most three pending coverage requests.
+- The original assignment remains active through a pending swap/drop and changes only when approval commits.
+- In-app notifications are authoritative and persisted. Email is simulated according to user preference.
 
 ## Evaluation Scenarios
 
-| Scenario | ShiftSync response |
+The deterministic seed and `e2e/evaluator-scenarios.spec.ts` cover the challenge’s six named scenarios:
+
+| Scenario | Demonstrated behavior |
 | --- | --- |
-| Sunday Night Chaos | **Find Coverage** surfaces qualified, available replacements and supports an audited emergency assignment inside the normal edit cutoff. |
-| Overtime Trap | Candidate preview shows weekly hours and projected overtime cost before confirmation and identifies the assignment crossing the threshold. |
-| Timezone Tangle | Shift instants are converted into the timezone stored on the staff member's availability rule rather than treating `09:00–17:00` as local to every location. |
-| Simultaneous Assignment | PostgreSQL locks and overlap constraints serialize competing assignments; one succeeds and the other receives an explainable conflict. |
-| Fairness Complaint | The report compares premium-shift opportunities with actual allocation and exposes the underlying shift evidence. |
-| Regret Swap | The requester may cancel before manager approval; the original assignment remains unchanged until an approval transaction commits. |
+| Sunday Night Chaos | A manager opens the emergency candidate workflow inside the cutoff, records a mandatory reason, assigns an eligible replacement, and produces audit/notification/outbox evidence. |
+| Overtime Trap | Candidate preview exposes projected weekly hours and overtime before commit; analytics identify the threshold-causing assignment and projected premium. |
+| Timezone Tangle | Switching between Eastern and Pacific locations changes the displayed IANA timezone while UTC instants remain authoritative. Availability is evaluated in the rule’s timezone. |
+| Simultaneous Assignment | Two authenticated managers choose different eligible staff for the same final position. Transactional locking permits exactly one commit and returns an explainable rejection to the loser. |
+| Fairness Complaint | Managers compare actual premium assignments against opportunity-normalized expectations and inspect the underlying eligible/assigned shift evidence. |
+| Regret Swap | Staff can cancel after coworker acceptance but before approval; the original assignment remains authoritative. The seeded drop path also demonstrates claim and manager approval. |
 
-## Current Limitations
+## Known Limitations
 
-- Slices 1, 2, 3, 4, 5, and 6 deliver core identity, RBAC authorization, location-scoped manager boards, published-schedule staff reads, a pure constraint engine (`evaluateAssignment`), PostgreSQL row-level locked transactions (`assignStaff`), schedule week publication/unpublishing with cutoff enforcement, audited emergency coverage (`assignEmergencyCoverage`), non-destructive availability risk flagging (`AT_RISK_AVAILABILITY`), persisted notification center, transactional outbox event insertion, coverage request state machines (`createSwapRequest`, `approveSwapRequest`, etc.), Better Auth-backed Pusher private channel authorization, durable outbox drain retry workers, manual time entry state machine (`clockInStaff`, `clockOutStaff`), On-Duty Live Dashboard, threshold-crossing overtime reporting (`getOvertimeReport`), opportunity-normalized fairness calculation (`getFairnessReport`), user notification delivery preference mode (`in_app_only` / `in_app_and_email`), formula-injection-protected streaming audit CSV export (`exportAuditLogsCSV`), and the Harbor Calm Analytics Dashboard.
-- Automatic schedule generation is intentionally out of scope. ShiftSync assists human scheduling with constraints, alternatives, and evidence.
-- External payroll, hardware clock, and geofencing integrations are out of scope.
+- Automatic schedule generation is intentionally out of scope; ShiftSync supports human decisions with constraints, alternatives, and evidence.
+- Email delivery is simulated. In-app notifications and their preferences are implemented, but no external email provider is configured.
+- The outbox retry endpoint is implemented and protected, but production must attach a scheduler to call it.
+- External payroll, hardware time clocks, geofencing, holiday calendars, and workforce-system integrations are out of scope.
+- Demo identities are seed-driven; there is no admin-facing team provisioning interface yet.
+- Availability persistence and at-risk reassessment exist in the domain layer, but a complete staff self-service availability editor is not included in the current UI.
+- Audit evidence is exportable by authorized managers/admins, but a dedicated per-shift history screen is not included in the current UI.

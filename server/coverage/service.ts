@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { and, count, eq, inArray, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "@/server/db";
 import {
   assignmentPeriods,
   assignments,
   auditLogs,
   coverageRequests,
+  managerLocations,
   outboxEvents,
   scheduleWeeks,
   shifts,
@@ -71,19 +72,41 @@ async function appendAuditAndEvent(client: typeof db, values: {
     beforeState: values.beforeStatus ? { status: values.beforeStatus } : null,
     afterState: { status: values.afterStatus, shiftId: values.shiftId },
   });
-  const eventId = randomUUID();
-  await client.insert(outboxEvents).values({
-    id: eventId,
-    channel: `private-shift-${values.shiftId}`,
-    event: `coverage.${values.afterStatus}`,
-    payload: {
-      eventId,
-      coverageRequestId: values.requestId,
-      shiftId: values.shiftId,
-      status: values.afterStatus,
-      recipients: values.recipients ?? [],
-    },
+  const channels = new Set<string>();
+  if (shift) channels.add(`private-location-${shift.locationId}`);
+  for (const recipient of values.recipients ?? []) channels.add(`private-user-${recipient}`);
+  const events = [...channels].map((channel) => {
+    const eventId = randomUUID();
+    return {
+      id: eventId,
+      channel,
+      event: `coverage.${values.afterStatus}`,
+      payload: {
+        eventId,
+        coverageRequestId: values.requestId,
+        shiftId: values.shiftId,
+        status: values.afterStatus,
+      },
+    };
   });
+  if (events.length) await client.insert(outboxEvents).values(events);
+  return events.map((event) => event.id);
+}
+
+async function activeManagerIds(client: typeof db, shiftId: string) {
+  const [shift] = await client.select({
+    locationId: shifts.locationId,
+    localStartDate: shifts.localStartDate,
+  }).from(shifts).where(eq(shifts.id, shiftId)).limit(1);
+  if (!shift) return [];
+  const rows = await client.select({ userId: managerLocations.managerUserId })
+    .from(managerLocations)
+    .where(and(
+      eq(managerLocations.locationId, shift.locationId),
+      lte(managerLocations.validFrom, shift.localStartDate),
+      or(isNull(managerLocations.validTo), gte(managerLocations.validTo, shift.localStartDate)),
+    ));
+  return [...new Set(rows.map((row) => row.userId))];
 }
 
 async function createRequest(command: SwapCommand | DropCommand, actor: EnrichedSession, type: CoverageType) {
@@ -156,15 +179,15 @@ async function createRequest(command: SwapCommand | DropCommand, actor: Enriched
         link: `/schedule?week=${ownedShift.weekStartDate}&shift=${command.shiftId}#shift-${command.shiftId}`,
       }]);
     }
-    await appendAuditAndEvent(client, {
+    const eventIds = await appendAuditAndEvent(client, {
       actorId: requesterStaffId,
       action: type === "swap" ? "SWAP_REQUEST_CREATED" : "DROP_REQUEST_CREATED",
       requestId: request.id,
       shiftId: command.shiftId,
       afterStatus: status,
-      recipients: targetStaffId ? [targetStaffId] : [],
+      recipients: [requesterStaffId, ...(targetStaffId ? [targetStaffId] : [])],
     });
-    return { success: true as const, requestId: request.id };
+    return { success: true as const, requestId: request.id, eventIds };
   });
 }
 
@@ -193,23 +216,33 @@ export async function acceptSwapRequest(requestId: string, actor: EnrichedSessio
       acceptedAt,
       version: sql`${coverageRequests.version} + 1`,
     }).where(eq(coverageRequests.id, request.id));
-    await dispatchNotifications(client, [{
-      userId: request.requesterStaffId,
-      type: "SWAP_REQUEST_ACCEPTED",
-      title: "Swap accepted",
-      message: "Your coworker accepted the swap. A manager still needs to approve it.",
-      link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
-    }]);
-    await appendAuditAndEvent(client, {
+    const managerIds = await activeManagerIds(client, request.shiftId);
+    await dispatchNotifications(client, [
+      {
+        userId: request.requesterStaffId,
+        type: "SWAP_REQUEST_ACCEPTED",
+        title: "Swap accepted",
+        message: "Your coworker accepted the swap. A manager still needs to approve it.",
+        link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
+      },
+      ...managerIds.map((userId) => ({
+        userId,
+        type: "COVERAGE_APPROVAL_REQUIRED",
+        title: "Swap ready for approval",
+        message: "Both staff members agreed to a shift swap. Review eligibility before approving the transfer.",
+        link: `/schedule?shift=${request.shiftId}#coverage-request-${request.id}`,
+      })),
+    ]);
+    const eventIds = await appendAuditAndEvent(client, {
       actorId: actor.session.user.id,
       action: "SWAP_REQUEST_ACCEPTED",
       requestId: request.id,
       shiftId: request.shiftId,
       beforeStatus: request.status,
       afterStatus: "accepted_by_target",
-      recipients: [request.requesterStaffId],
+      recipients: [request.requesterStaffId, actor.session.user.id, ...managerIds],
     });
-    return { success: true as const };
+    return { success: true as const, eventIds };
   });
 }
 
@@ -229,7 +262,7 @@ export async function claimDropRequest(requestId: string, actor: EnrichedSession
         status: "expired",
         version: sql`${coverageRequests.version} + 1`,
       }).where(eq(coverageRequests.id, request.id));
-      await appendAuditAndEvent(client, {
+      const eventIds = await appendAuditAndEvent(client, {
         actorId: actor.session.user.id,
         action: "DROP_REQUEST_EXPIRED",
         requestId: request.id,
@@ -237,7 +270,7 @@ export async function claimDropRequest(requestId: string, actor: EnrichedSession
         beforeStatus: request.status,
         afterStatus: "expired",
       });
-      return failed("DROP_REQUEST_EXPIRED", "This drop request closed 24 hours before the shift start.");
+      return { ...failed("DROP_REQUEST_EXPIRED", "This drop request closed 24 hours before the shift start."), eventIds };
     }
 
     const acceptedAt = new Date();
@@ -247,23 +280,33 @@ export async function claimDropRequest(requestId: string, actor: EnrichedSession
       acceptedAt,
       version: sql`${coverageRequests.version} + 1`,
     }).where(eq(coverageRequests.id, request.id));
-    await dispatchNotifications(client, [{
-      userId: request.requesterStaffId,
-      type: "DROP_REQUEST_CLAIMED",
-      title: "Drop request claimed",
-      message: "A coworker offered to cover your shift. A manager still needs to approve it.",
-      link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
-    }]);
-    await appendAuditAndEvent(client, {
+    const managerIds = await activeManagerIds(client, request.shiftId);
+    await dispatchNotifications(client, [
+      {
+        userId: request.requesterStaffId,
+        type: "DROP_REQUEST_CLAIMED",
+        title: "Drop request claimed",
+        message: "A coworker offered to cover your shift. A manager still needs to approve it.",
+        link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
+      },
+      ...managerIds.map((userId) => ({
+        userId,
+        type: "COVERAGE_APPROVAL_REQUIRED",
+        title: "Drop ready for approval",
+        message: "A qualified coworker claimed an offered shift. Review eligibility before approving the transfer.",
+        link: `/schedule?shift=${request.shiftId}#coverage-request-${request.id}`,
+      })),
+    ]);
+    const eventIds = await appendAuditAndEvent(client, {
       actorId: actor.session.user.id,
       action: "DROP_REQUEST_CLAIMED",
       requestId: request.id,
       shiftId: request.shiftId,
       beforeStatus: request.status,
       afterStatus: "claimed",
-      recipients: [request.requesterStaffId],
+      recipients: [request.requesterStaffId, actor.session.user.id, ...managerIds],
     });
-    return { success: true as const };
+    return { success: true as const, eventIds };
   });
 }
 
@@ -342,7 +385,7 @@ async function approveRequest(requestId: string, actor: EnrichedSession, type: C
           link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
         },
       ]);
-      await appendAuditAndEvent(client, {
+      const eventIds = await appendAuditAndEvent(client, {
         actorId: actor.session.user.id,
         action: type === "swap" ? "SWAP_REQUEST_APPROVED" : "DROP_REQUEST_APPROVED",
         requestId: request.id,
@@ -351,7 +394,7 @@ async function approveRequest(requestId: string, actor: EnrichedSession, type: C
         afterStatus: "approved",
         recipients: [request.requesterStaffId, incomingStaffId],
       });
-      return { success: true as const };
+      return { success: true as const, eventIds };
     });
   } catch (error) {
     const databaseError = error as { code?: string; cause?: { code?: string } };
@@ -368,6 +411,54 @@ export function approveSwapRequest(requestId: string, actor: EnrichedSession) {
 
 export function approveDropRequest(requestId: string, actor: EnrichedSession) {
   return approveRequest(requestId, actor, "drop");
+}
+
+export async function rejectCoverageRequest(requestId: string, actor: EnrichedSession) {
+  return db.transaction(async (tx) => {
+    const client = tx as unknown as typeof db;
+    const request = await lockRequest(client, requestId);
+    if (!request || !["accepted_by_target", "claimed"].includes(request.status)) {
+      return failed("COVERAGE_STATE_CHANGED", "This coverage request is no longer ready for a manager decision.");
+    }
+    const [shift] = await client.select({ locationId: shifts.locationId })
+      .from(shifts)
+      .where(eq(shifts.id, request.shiftId))
+      .limit(1);
+    if (!shift) return failed("COVERAGE_SHIFT_NOT_FOUND", "The shift no longer exists.");
+    if (!(await canManageLocation(client, actor, shift.locationId))) {
+      return failed("MANAGER_LOCATION_UNAUTHORIZED", "You are not authorized to reject coverage at this location.");
+    }
+
+    const rejectedAt = new Date();
+    await tx.update(coverageRequests).set({
+      status: "rejected",
+      cancelledAt: rejectedAt,
+      cancelReason: "Rejected by manager",
+      version: sql`${coverageRequests.version} + 1`,
+    }).where(eq(coverageRequests.id, request.id));
+    const affected = [...new Set([
+      request.requesterStaffId,
+      request.targetStaffId,
+      request.claimantStaffId,
+    ].filter((id): id is string => Boolean(id)))];
+    await dispatchNotifications(client, affected.map((userId) => ({
+      userId,
+      type: "COVERAGE_REQUEST_REJECTED",
+      title: "Coverage request declined",
+      message: "A manager declined the proposed assignment transfer. The original assignment remains unchanged.",
+      link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
+    })));
+    const eventIds = await appendAuditAndEvent(client, {
+      actorId: actor.session.user.id,
+      action: request.type === "swap" ? "SWAP_REQUEST_REJECTED" : "DROP_REQUEST_REJECTED",
+      requestId: request.id,
+      shiftId: request.shiftId,
+      beforeStatus: request.status,
+      afterStatus: "rejected",
+      recipients: affected,
+    });
+    return { success: true as const, eventIds };
+  });
 }
 
 export async function cancelCoverageRequest(requestId: string, actor: EnrichedSession) {
@@ -398,15 +489,15 @@ export async function cancelCoverageRequest(requestId: string, actor: EnrichedSe
         link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
       })));
     }
-    await appendAuditAndEvent(client, {
+    const eventIds = await appendAuditAndEvent(client, {
       actorId: actor.session.user.id,
       action: "COVERAGE_REQUEST_CANCELLED",
       requestId: request.id,
       shiftId: request.shiftId,
       beforeStatus: request.status,
       afterStatus: "cancelled",
-      recipients: affected,
+      recipients: [request.requesterStaffId, ...affected],
     });
-    return { success: true as const };
+    return { success: true as const, eventIds };
   });
 }

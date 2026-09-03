@@ -7,6 +7,7 @@ import {
   scheduleWeeks,
   shifts,
   skills,
+  staffLocationCertifications,
   userProfiles,
 } from "@/server/db/schema";
 import type { EnrichedSession } from "@/server/auth/session";
@@ -47,6 +48,13 @@ export async function getScheduleForLocation(
         endsAt: shifts.endsAt,
         status: shifts.status,
         headcount: shifts.headcount,
+        requiredSkillId: shifts.requiredSkillId,
+        localStartDate: shifts.localStartDate,
+        localStartTime: shifts.localStartTime,
+        localEndDate: shifts.localEndDate,
+        localEndTime: shifts.localEndTime,
+        timezone: shifts.timezone,
+        premium: shifts.premium,
         skillName: skills.name,
       }).from(shifts)
         .innerJoin(skills, eq(shifts.requiredSkillId, skills.id))
@@ -136,6 +144,26 @@ export async function getAccessibleLocations(actor: EnrichedSession) {
         eq(locations.active, true),
         lte(managerLocations.validFrom, today),
         or(isNull(managerLocations.validTo), gte(managerLocations.validTo, today)),
+      ))
+      .orderBy(asc(locations.name));
+  }
+  if (hasRole(actor, "staff")) {
+    const today = new Date().toISOString().slice(0, 10);
+    return db.select({
+      id: locations.id,
+      name: locations.name,
+      timezone: locations.timezone,
+      active: locations.active,
+      schedulingCutoffMinutes: locations.schedulingCutoffMinutes,
+      createdAt: locations.createdAt,
+    }).from(staffLocationCertifications)
+      .innerJoin(locations, eq(staffLocationCertifications.locationId, locations.id))
+      .where(and(
+        eq(staffLocationCertifications.staffId, actor.session.user.id),
+        eq(staffLocationCertifications.status, "active"),
+        eq(locations.active, true),
+        lte(staffLocationCertifications.validFrom, today),
+        or(isNull(staffLocationCertifications.validTo), gte(staffLocationCertifications.validTo, today)),
       ))
       .orderBy(asc(locations.name));
   }

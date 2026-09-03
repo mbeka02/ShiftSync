@@ -109,8 +109,8 @@ describe("Transactional assignment", () => {
     const { assignStaff } = await import("@/server/scheduling/assignment");
     const { getAuthenticatedUser } = await import("@/server/auth/session");
     const { db } = await import("@/server/db");
-    const { assignments, assignmentPeriods } = await import("@/server/db/schema");
-    const { eq } = await import("drizzle-orm");
+    const { assignments, assignmentPeriods, auditLogs, notifications, outboxEvents } = await import("@/server/db/schema");
+    const { and, eq } = await import("drizzle-orm");
 
     const { headers: managerHeaders, userId: managerId } = await createTestUser("manager", {
       firstName: "Alex",
@@ -160,6 +160,22 @@ describe("Transactional assignment", () => {
       .where(eq(assignmentPeriods.assignmentId, assignment.id));
     expect(period).toBeDefined();
     expect(period.staffId).toBe(staffId);
+
+    const [audit] = await db.select().from(auditLogs).where(and(
+      eq(auditLogs.entityType, "assignment"),
+      eq(auditLogs.entityId, assignment.id),
+    ));
+    expect(audit?.action).toBe("STAFF_ASSIGNED");
+    const [notification] = await db.select().from(notifications).where(and(
+      eq(notifications.userId, staffId),
+      eq(notifications.type, "SHIFT_ASSIGNED"),
+    ));
+    expect(notification).toBeDefined();
+    const events = await db.select().from(outboxEvents).where(eq(outboxEvents.event, "assignment.assigned"));
+    expect(events.map((event) => event.channel)).toEqual(expect.arrayContaining([
+      `private-location-${locationId}`,
+      `private-user-${staffId}`,
+    ]));
   });
 
   // ─── Constraint-blocked assignment ───────────────────────────────

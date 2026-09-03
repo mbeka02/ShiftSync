@@ -3,6 +3,24 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 config({ path: ".env.local", quiet: true });
+const testEnvironment = config({ path: ".env.test.local", override: true, quiet: true });
+
+if (testEnvironment.error) {
+  throw new Error(
+    "Missing .env.test.local. Pull the Neon test branch environment before running Vitest.",
+    { cause: testEnvironment.error },
+  );
+}
+
+if (process.env.NEON_BRANCH !== "test") {
+  throw new Error(
+    `Unsafe Vitest database configuration: expected NEON_BRANCH=test, received ${process.env.NEON_BRANCH ?? "unset"}.`,
+  );
+}
+
+if (!process.env.DATABASE_URL || !process.env.DATABASE_URL_UNPOOLED) {
+  throw new Error("Unsafe Vitest database configuration: test database URLs are missing.");
+}
 
 export default defineConfig({
   plugins: [react()],

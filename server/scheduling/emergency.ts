@@ -68,20 +68,23 @@ export async function assignEmergencyCoverage(command: EmergencyCoverageCommand,
         message: "You have been assigned emergency coverage. Review the shift details before service.",
         link: `/schedule?week=${week?.weekStartDate ?? ""}&shift=${command.shiftId}#shift-${command.shiftId}`,
       }]);
-      const eventId = randomUUID();
-      await tx.insert(outboxEvents).values({
-        id: eventId,
-        channel: `private-user-${command.staffId}`,
-        event: "emergency-coverage.assigned",
-        payload: {
-          eventId,
-          assignmentId: assignment.id,
-          shiftId: command.shiftId,
-          staffId: command.staffId,
-          scheduleWeekId: loaded.shift.scheduleWeekId,
-        },
+      const events = [`private-location-${loaded.shift.locationId}`, `private-user-${command.staffId}`].map((channel) => {
+        const eventId = randomUUID();
+        return {
+          id: eventId,
+          channel,
+          event: "emergency-coverage.assigned",
+          payload: {
+            eventId,
+            assignmentId: assignment.id,
+            shiftId: command.shiftId,
+            staffId: command.staffId,
+            scheduleWeekId: loaded.shift.scheduleWeekId,
+          },
+        };
       });
-      return { success: true as const, assignmentId: assignment.id };
+      await tx.insert(outboxEvents).values(events);
+      return { success: true as const, assignmentId: assignment.id, eventIds: events.map((event) => event.id) };
     });
   } catch (error) {
     const databaseError = error as { code?: string; cause?: { code?: string } };

@@ -11,7 +11,7 @@ type ProfileData = {
   primaryTimezone?: string;
 };
 
-export async function createTestUser(roleCode: RoleCode, profile: ProfileData) {
+export async function createTestUser(roleCode: RoleCode, profile: ProfileData = { firstName: "Test", lastName: "User" }) {
   const nonce = randomUUID();
   const email = `test-${nonce}@shiftsync.local`;
   const response = await auth.api.signUpEmail({

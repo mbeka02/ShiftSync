@@ -20,7 +20,7 @@ export default defineConfig({
         test: {
           name: "parallel-integration",
           include: ["tests/**/*.test.ts"],
-          exclude: ["tests/emergency-coverage.test.ts"],
+          exclude: ["tests/emergency-coverage.test.ts", "tests/outbox-drain.test.ts"],
           sequence: { groupOrder: 0 },
         },
       },
@@ -31,6 +31,16 @@ export default defineConfig({
           include: ["tests/emergency-coverage.test.ts"],
           fileParallelism: false,
           sequence: { groupOrder: 1 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "isolated-outbox",
+          include: ["tests/outbox-drain.test.ts"],
+          fileParallelism: false,
+          setupFiles: ["tests/helpers/prepare-outbox-test.ts"],
+          sequence: { groupOrder: 2 },
         },
       },
     ],

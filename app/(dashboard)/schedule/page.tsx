@@ -7,7 +7,9 @@ import { getLocalSnapshot } from "@/server/scheduling/time";
 import { ShiftAssignmentCard } from "@/components/shift-sync/shift-assignment-card";
 import { SchedulePublicationControl } from "@/components/shift-sync/schedule-publication-control";
 import { CoverageQueue, StaffShiftCoverageActions } from "@/components/shift-sync/coverage-workflows";
+import { OnDutyDashboard, StaffOnDutyControl } from "@/components/shift-sync/on-duty-dashboard";
 import { getManagerCoverageQueue, getStaffCoverageQueue, getSwapTargetsForShifts } from "@/server/coverage/queries";
+import { getOnDutyStaff, getOpenTimeEntryForStaff } from "@/server/onduty/queries";
 import { loadAssignmentCandidatesAction } from "./actions";
 
 function mondayToday() {
@@ -36,28 +38,31 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
 
   if (staff) {
     const schedule = await getMySchedule(weekStart, actor);
-    const [coverageQueue, swapTargets] = await Promise.all([
+    const [coverageQueue, swapTargets, openTimeEntry] = await Promise.all([
       getStaffCoverageQueue(actor),
       getSwapTargetsForShifts(schedule.shifts.map((shift) => shift.shiftId), actor),
+      getOpenTimeEntryForStaff(actor),
     ]);
     return <section id="schedule-content" className="scroll-mt-6 px-4 py-6 sm:px-6 lg:px-8"><ScheduleHeading weekStart={weekStart} eyebrow="My shifts" title="Published schedule" />
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_18rem]"><div className="space-y-3">
-        {schedule.shifts.length ? schedule.shifts.map((shift) => <article id={`shift-${shift.shiftId}`} key={shift.shiftId} className={`scroll-mt-6 grid gap-3 border bg-white p-4 transition-shadow sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-center lg:grid-cols-[8rem_minmax(0,1fr)_auto_auto] ${params.shift === shift.shiftId ? "border-primary shadow-[0_0_0_2px_var(--focus-ring)]" : ""}`}><div><p className="font-mono text-xs uppercase text-muted-foreground">{new Date(`${shift.localStartDate}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" })}</p><p className="mt-1 font-heading text-2xl uppercase">{displayTime(shift.localStartTime)}</p></div><div><p className="font-semibold">{shift.skillName}</p><p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground"><MapPin className="size-3.5" />{shift.locationName}</p>{shift.riskFlags.some((flag) => flag === "AT_RISK_AVAILABILITY" || flag === "AT_RISK_CERTIFICATION") ? <p className="mt-2 inline-flex items-center gap-1 font-mono text-[9px] font-medium uppercase tracking-[0.08em] text-[var(--warning-fg)]"><AlertTriangle className="size-3" />At risk · manager review needed</p> : null}</div><div className="text-left sm:text-right"><p className="font-mono text-xs">{displayTime(shift.localStartTime)}–{displayTime(shift.localEndTime)}</p><p className="mt-1 text-xs text-muted-foreground">{shift.locationTimezone}</p></div><StaffShiftCoverageActions shiftId={shift.shiftId} canRequestSwap={shift.canRequestSwap} canRequestDrop={shift.canRequestDrop} targets={swapTargets[shift.shiftId] ?? []} activeRequest={coverageQueue.find((request) => request.shiftId === shift.shiftId && request.isRequester)} /></article>) : <EmptySchedule message="No published shifts are assigned to you this week." />}
+        {schedule.shifts.length ? schedule.shifts.map((shift) => <article id={`shift-${shift.shiftId}`} key={shift.shiftId} className={`scroll-mt-6 grid gap-3 border bg-white p-4 transition-shadow sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-center lg:grid-cols-[8rem_minmax(0,1fr)_auto_auto] ${params.shift === shift.shiftId ? "border-primary shadow-[0_0_0_2px_var(--focus-ring)]" : ""}`}><div><p className="font-mono text-xs uppercase text-muted-foreground">{new Date(`${shift.localStartDate}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" })}</p><p className="mt-1 font-heading text-2xl uppercase">{displayTime(shift.localStartTime)}</p></div><div><p className="font-semibold">{shift.skillName}</p><p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground"><MapPin className="size-3.5" />{shift.locationName}</p>{shift.riskFlags.some((flag) => flag === "AT_RISK_AVAILABILITY" || flag === "AT_RISK_CERTIFICATION") ? <p className="mt-2 inline-flex items-center gap-1 font-mono text-[9px] font-medium uppercase tracking-[0.08em] text-[var(--warning-fg)]"><AlertTriangle className="size-3" />At risk · manager review needed</p> : null}</div><div className="text-left sm:text-right"><p className="font-mono text-xs">{displayTime(shift.localStartTime)}–{displayTime(shift.localEndTime)}</p><p className="mt-1 text-xs text-muted-foreground">{shift.locationTimezone}</p></div><div className="flex flex-col items-start gap-2 lg:items-end"><StaffOnDutyControl assignmentId={shift.assignmentId} canClockIn={shift.canClockIn} openEntry={openTimeEntry ? { ...openTimeEntry, clockInAt: openTimeEntry.clockInAt.toISOString() } : null} /><StaffShiftCoverageActions shiftId={shift.shiftId} canRequestSwap={shift.canRequestSwap} canRequestDrop={shift.canRequestDrop} targets={swapTargets[shift.shiftId] ?? []} activeRequest={coverageQueue.find((request) => request.shiftId === shift.shiftId && request.isRequester)} /></div></article>) : <EmptySchedule message="No published shifts are assigned to you this week." />}
       </div><ServiceRail count={schedule.shifts.length} staff /></div><CoverageQueue requests={coverageQueue} role="staff" /></section>;
   }
 
   const accessible = await getAccessibleLocations(actor);
   const selected = accessible.find((location) => location.id === params.location) ?? accessible[0];
-  const [result, coverageQueue] = selected ? await Promise.all([
+  const [result, coverageQueue, onDutyStaff] = selected ? await Promise.all([
     getScheduleForLocation(selected.id, weekStart, actor),
     getManagerCoverageQueue(selected.id, actor),
-  ]) : [null, []];
+    getOnDutyStaff(selected.id, actor),
+  ]) : [null, [], []];
   const shifts = result?.success ? result.data.shifts : [];
   const days = weekDays(weekStart);
   return <section id="schedule-content" className="scroll-mt-6 px-4 py-6 sm:px-6 lg:px-8"><ScheduleHeading weekStart={weekStart} eyebrow="Manager board" title={selected?.name ?? "Schedule workspace"} action={result?.success && result.data.week ? <SchedulePublicationControl weekId={result.data.week.id} status={result.data.week.status} version={result.data.week.version} /> : null} />
     <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_18rem]"><div className="overflow-x-auto border bg-white"><div className="grid min-w-[760px] grid-cols-7">
       {days.map((day) => <div key={day.iso} className="min-h-[28rem] border-r last:border-r-0"><div className="border-b bg-[var(--surface-subtle)] px-3 py-3"><p className="text-xs font-semibold uppercase tracking-[0.08em]">{day.day}</p><p className="font-mono text-[10px] text-muted-foreground">{day.date}</p></div><div className="space-y-2 p-2">{shifts.filter((shift) => selected && getLocalSnapshot(shift.startsAt, selected.timezone).date === day.iso).map((shift) => selected ? <ShiftAssignmentCard key={shift.shiftId} shift={{ ...shift, startsAt: shift.startsAt.toISOString(), endsAt: shift.endsAt.toISOString() }} timezone={selected.timezone} loadCandidates={loadAssignmentCandidatesAction} /> : null)}</div></div>)}
     </div></div><ServiceRail count={shifts.length} /></div>
+    {selected ? <OnDutyDashboard key={selected.id} locationId={selected.id} timezone={selected.timezone} staff={onDutyStaff.map((person) => ({ ...person, shiftStartsAt: person.shiftStartsAt.toISOString(), shiftEndsAt: person.shiftEndsAt.toISOString(), clockInAt: person.clockInAt.toISOString() }))} /> : null}
     {selected ? <CoverageQueue requests={coverageQueue} role="manager" /> : <div className="mt-6"><EmptySchedule message="No active locations are assigned to this account yet." /></div>}
   </section>;
 }

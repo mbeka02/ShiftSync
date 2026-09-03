@@ -5,3 +5,4 @@ export * from "./users";
 export * from "./scheduling";
 export * from "./operations";
 export * from "./coverage";
+export * from "./time-entries";

@@ -12,7 +12,7 @@ function requireEnvironmentValue(name: string): string {
   return value;
 }
 
-function getPusher(): Pusher {
+export function getPusher(): Pusher {
   if (!pusher) {
     pusher = new Pusher({
       appId: requireEnvironmentValue("PUSHER_APP_ID"),
@@ -24,6 +24,15 @@ function getPusher(): Pusher {
   }
 
   return pusher;
+}
+
+export function hasPusherCredentials(): boolean {
+  return Boolean(
+    process.env.PUSHER_APP_ID
+    && process.env.NEXT_PUBLIC_PUSHER_APP_KEY
+    && process.env.PUSHER_SECRET
+    && process.env.NEXT_PUBLIC_PUSHER_CLUSTER,
+  );
 }
 
 export async function publishEvent(

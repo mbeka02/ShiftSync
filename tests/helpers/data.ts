@@ -13,7 +13,7 @@ import {
 } from "@/server/db/schema";
 import { getLocalSnapshot } from "@/server/scheduling/time";
 
-export async function createTestLocation(data: { name: string; timezone: string }) {
+export async function createTestLocation(data: { name: string; timezone: string } = { name: "Test Location", timezone: "UTC" }) {
   const [location] = await db.insert(locations).values({
     name: `${data.name} · ${randomUUID().slice(0, 8)}`,
     timezone: data.timezone,
@@ -43,7 +43,7 @@ export async function createScheduleWeek(
   return week.id;
 }
 
-export async function createTestSkill(data: { code: string; name: string }) {
+export async function createTestSkill(data: { code: string; name: string } = { code: "test-skill", name: "Test Skill" }) {
   const [skill] = await db.insert(skills).values({
     code: `${data.code}-${randomUUID().slice(0, 8)}`,
     name: data.name,
@@ -55,9 +55,9 @@ export async function createShift(data: {
   scheduleWeekId: string;
   locationId: string;
   requiredSkillId: string;
-  startsAt: Date;
-  endsAt: Date;
-  timezone: string;
+  startsAt?: Date;
+  endsAt?: Date;
+  timezone?: string;
   updatedBy?: string;
 }) {
   let updatedBy = data.updatedBy;
@@ -69,10 +69,18 @@ export async function createShift(data: {
     if (!manager) throw new Error("A manager test user must exist before creating a shift.");
     updatedBy = manager.userId;
   }
-  const start = getLocalSnapshot(data.startsAt, data.timezone);
-  const end = getLocalSnapshot(data.endsAt, data.timezone);
+  const startsAt = data.startsAt ?? new Date(Date.now() + 60 * 60_000);
+  const endsAt = data.endsAt ?? new Date(startsAt.getTime() + 8 * 60 * 60_000);
+  const timezone = data.timezone ?? "UTC";
+  const start = getLocalSnapshot(startsAt, timezone);
+  const end = getLocalSnapshot(endsAt, timezone);
   const [shift] = await db.insert(shifts).values({
-    ...data,
+    scheduleWeekId: data.scheduleWeekId,
+    locationId: data.locationId,
+    requiredSkillId: data.requiredSkillId,
+    startsAt,
+    endsAt,
+    timezone,
     updatedBy,
     localStartDate: start.date,
     localStartTime: start.time,

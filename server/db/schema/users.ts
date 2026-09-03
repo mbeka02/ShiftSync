@@ -3,6 +3,7 @@ import { check, date, numeric, pgEnum, pgTable, primaryKey, text, timestamp, uni
 import { user } from "./auth";
 
 export const profileStatus = pgEnum("profile_status", ["active", "inactive"]);
+export const notificationMode = pgEnum("notification_mode", ["in_app_only", "in_app_and_email"]);
 
 export const userProfiles = pgTable("user_profiles", {
   userId: text("user_id").primaryKey().references(() => user.id, { onDelete: "cascade" }),
@@ -39,4 +40,24 @@ export const staffProfiles = pgTable("staff_profiles", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [check("staff_employment_dates_check", sql`${table.employmentEndDate} is null or ${table.employmentEndDate} >= ${table.employmentStartDate}`)]);
 
+export const staffCompensation = pgTable("staff_compensation", {
+  staffId: text("staff_id").notNull().references(() => staffProfiles.userId, { onDelete: "cascade" }),
+  hourlyRate: numeric("hourly_rate", { mode: "number", precision: 10, scale: 2 }).notNull(),
+  overtimeMultiplier: numeric("overtime_multiplier", { mode: "number", precision: 5, scale: 2 }).default(1.5).notNull(),
+  effectiveFrom: date("effective_from", { mode: "string" }).notNull(),
+  effectiveTo: date("effective_to", { mode: "string" }),
+}, (table) => [
+  primaryKey({ columns: [table.staffId, table.effectiveFrom] }),
+  check("staff_compensation_rate_positive_check", sql`${table.hourlyRate} >= 0`),
+  check("staff_compensation_multiplier_check", sql`${table.overtimeMultiplier} >= 1`),
+  check("staff_compensation_dates_check", sql`${table.effectiveTo} is null or ${table.effectiveTo} >= ${table.effectiveFrom}`),
+]);
+
+export const notificationPreferences = pgTable("notification_preferences", {
+  userId: text("user_id").primaryKey().references(() => user.id, { onDelete: "cascade" }),
+  notificationMode: notificationMode("notification_mode").default("in_app_only").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export type RoleCode = "admin" | "manager" | "staff";
+export type NotificationMode = "in_app_only" | "in_app_and_email";

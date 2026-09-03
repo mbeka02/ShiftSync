@@ -5,13 +5,13 @@ import {
   assignmentPeriods,
   assignments,
   auditLogs,
-  notifications,
   outboxEvents,
   scheduleWeeks,
 } from "@/server/db/schema";
 import type { EnrichedSession } from "@/server/auth/session";
 import { canManageLocation, loadEvaluationInput } from "./assignment";
 import type { ConstraintViolation } from "./constraints";
+import { dispatchNotifications } from "@/server/notifications/service";
 
 type EmergencyCoverageCommand = { shiftId: string; staffId: string; reason: string };
 
@@ -54,19 +54,20 @@ export async function assignEmergencyCoverage(command: EmergencyCoverageCommand,
         action: "EMERGENCY_COVERAGE_REPLACE",
         entityType: "assignment",
         entityId: assignment.id,
+        locationId: loaded.shift.locationId,
         afterState: { assignmentId: assignment.id, shiftId: command.shiftId, staffId: command.staffId, reason },
       });
       const [week] = await client.select({ weekStartDate: scheduleWeeks.weekStartDate })
         .from(scheduleWeeks)
         .where(eq(scheduleWeeks.id, loaded.shift.scheduleWeekId))
         .limit(1);
-      await tx.insert(notifications).values({
+      await dispatchNotifications(client, [{
         userId: command.staffId,
         type: "EMERGENCY_COVERAGE_ASSIGNED",
         title: "Emergency coverage assigned",
         message: "You have been assigned emergency coverage. Review the shift details before service.",
         link: `/schedule?week=${week?.weekStartDate ?? ""}&shift=${command.shiftId}#shift-${command.shiftId}`,
-      });
+      }]);
       const eventId = randomUUID();
       await tx.insert(outboxEvents).values({
         id: eventId,

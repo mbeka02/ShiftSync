@@ -7,7 +7,6 @@ import {
   auditLogs,
   coverageRequests,
   locations,
-  notifications,
   outboxEvents,
   scheduleWeeks,
   shifts,
@@ -16,6 +15,7 @@ import type { EnrichedSession } from "@/server/auth/session";
 import { canManageLocation } from "./assignment";
 import type { ConstraintViolation } from "./constraints";
 import { getLocalSnapshot } from "./time";
+import { dispatchNotifications } from "@/server/notifications/service";
 
 export type UpdateShiftCommand = {
   shiftId: string;
@@ -53,6 +53,7 @@ export async function publishScheduleWeek(weekId: string, actor: EnrichedSession
       action: "SCHEDULE_PUBLISHED",
       entityType: "schedule_week",
       entityId: week.id,
+      locationId: week.locationId,
       beforeState: { status: week.status, version: week.version },
       afterState: { status: "published", version: week.version + 1 },
     });
@@ -104,6 +105,7 @@ export async function unpublishScheduleWeek(weekId: string, actor: EnrichedSessi
       action: "SCHEDULE_UNPUBLISHED",
       entityType: "schedule_week",
       entityId: record.id,
+      locationId: record.locationId,
       beforeState: { status: record.status, version: record.version },
       afterState: { status: "draft", version: record.version + 1 },
     });
@@ -232,11 +234,12 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
           action: "COVERAGE_REQUEST_CANCELLED_SHIFT_EDIT",
           entityType: "coverage_request",
           entityId: request.id,
+          locationId,
           beforeState: { status: request.status },
           afterState: { status: "cancelled", reason: "Shift details changed" },
         });
         if (recipients.length) {
-          await tx.insert(notifications).values(recipients.map((userId) => ({
+          await dispatchNotifications(client, recipients.map((userId) => ({
             userId,
             type: "COVERAGE_REQUEST_CANCELLED",
             title: "Coverage request cancelled",
@@ -267,6 +270,7 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
       action: "SHIFT_UPDATED",
       entityType: "shift",
       entityId: current.shift.id,
+      locationId,
       beforeState: {
         startsAt: current.shift.startsAt.toISOString(),
         endsAt: current.shift.endsAt.toISOString(),

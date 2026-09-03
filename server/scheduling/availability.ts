@@ -6,7 +6,6 @@ import {
   availabilityExceptions,
   availabilityRules,
   managerLocations,
-  notifications,
   outboxEvents,
   scheduleWeeks,
   shifts,
@@ -14,6 +13,7 @@ import {
 } from "@/server/db/schema";
 import type { EnrichedSession } from "@/server/auth/session";
 import { isShiftWithinAvailability } from "./constraints";
+import { dispatchNotifications } from "@/server/notifications/service";
 
 type AvailabilityRuleInput = {
   weekday: number;
@@ -130,7 +130,7 @@ export async function updateStaffAvailability(staffId: string, rules: Availabili
         message: "A staff member’s updated availability no longer covers an assigned shift.",
         link: `/schedule?week=${assignment.weekStartDate}&location=${assignment.locationId}&shift=${assignment.shiftId}#shift-${assignment.shiftId}`,
       })));
-    if (notificationRows.length) await tx.insert(notifications).values(notificationRows);
+    if (notificationRows.length) await dispatchNotifications(client, notificationRows);
 
     await tx.insert(outboxEvents).values(newlyAtRisk.map((assignment) => {
       const eventId = randomUUID();

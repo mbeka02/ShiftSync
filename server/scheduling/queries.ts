@@ -84,6 +84,7 @@ export async function getMySchedule(weekStart: string, actor: EnrichedSession) {
     throw new Error("Staff schedule access requires the staff role.");
   }
   const rows = await db.select({
+    assignmentId: assignments.id,
     shiftId: shifts.id,
     startsAt: shifts.startsAt,
     endsAt: shifts.endsAt,
@@ -97,6 +98,7 @@ export async function getMySchedule(weekStart: string, actor: EnrichedSession) {
     riskFlags: assignments.riskFlags,
     canRequestSwap: sql<boolean>`${shifts.startsAt} > now()`,
     canRequestDrop: sql<boolean>`${shifts.startsAt} > now() + interval '24 hours'`,
+    canClockIn: sql<boolean>`${shifts.endsAt} > now()`,
   }).from(assignments)
     .innerJoin(shifts, eq(assignments.shiftId, shifts.id))
     .innerJoin(scheduleWeeks, eq(shifts.scheduleWeekId, scheduleWeeks.id))

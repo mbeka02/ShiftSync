@@ -10,11 +10,12 @@ import {
   outboxEvents,
   scheduleWeeks,
   shifts,
+  skills,
 } from "@/server/db/schema";
 import type { EnrichedSession } from "@/server/auth/session";
-import { canManageLocation } from "./assignment";
+import { canManageLocation, loadEvaluationInput } from "./assignment";
 import type { ConstraintViolation } from "./constraints";
-import { getLocalSnapshot } from "./time";
+import { getLocalSnapshot, localDateTimeToInstant } from "./time";
 import { dispatchNotifications } from "@/server/notifications/service";
 
 export type UpdateShiftCommand = {
@@ -24,12 +25,118 @@ export type UpdateShiftCommand = {
   headcount?: number;
   locationId?: string;
   requiredSkillId?: string;
+  premium?: boolean;
+};
+
+export type CreateShiftCommand = {
+  locationId: string;
+  weekStartDate: string;
+  requiredSkillId: string;
+  startsLocal: string;
+  endsLocal: string;
+  headcount: number;
+  premium: boolean;
 };
 
 const blocker = (code: string, message: string): ConstraintViolation => ({ code, severity: "BLOCK", message, details: {} });
 const missing = () => blocker("SCHEDULE_TARGET_NOT_FOUND", "The schedule week or shift no longer exists.");
 const unauthorized = () => blocker("MANAGER_LOCATION_UNAUTHORIZED", "You are not authorized to manage this location.");
 const cutoffReached = () => blocker("SCHEDULE_CUTOFF_REACHED", "This published schedule is inside the location’s edit cutoff. Use audited emergency coverage for staffing changes.");
+
+export async function createShift(command: CreateShiftCommand, actor: EnrichedSession) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select id from locations where id = ${command.locationId} for update`);
+    const client = tx as unknown as typeof db;
+    const [[location], [skill]] = await Promise.all([
+      client.select().from(locations).where(and(eq(locations.id, command.locationId), eq(locations.active, true))).limit(1),
+      client.select({ id: skills.id }).from(skills).where(and(eq(skills.id, command.requiredSkillId), eq(skills.active, true))).limit(1),
+    ]);
+    if (!location || !skill) return { success: false as const, blockers: [missing()] };
+    if (!(await canManageLocation(client, actor, location.id))) return { success: false as const, blockers: [unauthorized()] };
+
+    let startsAt: Date;
+    let endsAt: Date;
+    try {
+      startsAt = localDateTimeToInstant(command.startsLocal, location.timezone);
+      endsAt = localDateTimeToInstant(command.endsLocal, location.timezone);
+    } catch (error) {
+      return { success: false as const, blockers: [blocker("INVALID_LOCAL_TIME", error instanceof Error ? error.message : "The local shift time is invalid.")] };
+    }
+    if (endsAt <= startsAt || command.headcount < 1) {
+      return { success: false as const, blockers: [blocker("INVALID_SHIFT_STRUCTURE", "The shift end must follow its start and headcount must be at least one.")] };
+    }
+    const localStart = getLocalSnapshot(startsAt, location.timezone);
+    const localEnd = getLocalSnapshot(endsAt, location.timezone);
+    const weekEnd = new Date(`${command.weekStartDate}T12:00:00Z`);
+    weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
+    if (localStart.date < command.weekStartDate || localStart.date > weekEnd.toISOString().slice(0, 10)) {
+      return { success: false as const, blockers: [blocker("SHIFT_OUTSIDE_WEEK", "The shift must begin within the selected schedule week.")] };
+    }
+
+    await tx.execute(sql`
+      select id from schedule_weeks
+      where location_id = ${location.id} and week_start_date = ${command.weekStartDate}
+      for update
+    `);
+    let [week] = await client.select().from(scheduleWeeks).where(and(
+      eq(scheduleWeeks.locationId, location.id),
+      eq(scheduleWeeks.weekStartDate, command.weekStartDate),
+    )).limit(1);
+    if (!week) {
+      [week] = await tx.insert(scheduleWeeks).values({
+        locationId: location.id,
+        weekStartDate: command.weekStartDate,
+        status: "draft",
+      }).returning();
+    }
+    if (week.status === "published" && startsAt.getTime() - Date.now() < location.schedulingCutoffMinutes * 60_000) {
+      return { success: false as const, blockers: [cutoffReached()] };
+    }
+
+    const [created] = await tx.insert(shifts).values({
+      scheduleWeekId: week.id,
+      locationId: location.id,
+      requiredSkillId: skill.id,
+      startsAt,
+      endsAt,
+      timezone: location.timezone,
+      localStartDate: localStart.date,
+      localStartTime: localStart.time,
+      localEndDate: localEnd.date,
+      localEndTime: localEnd.time,
+      headcount: command.headcount,
+      premium: command.premium,
+      updatedBy: actor.session.user.id,
+    }).returning({ id: shifts.id });
+    await tx.update(scheduleWeeks).set({
+      version: sql`${scheduleWeeks.version} + 1`,
+      updatedAt: new Date(),
+    }).where(eq(scheduleWeeks.id, week.id));
+    await tx.insert(auditLogs).values({
+      actorId: actor.session.user.id,
+      action: "SHIFT_CREATED",
+      entityType: "shift",
+      entityId: created.id,
+      locationId: location.id,
+      afterState: {
+        scheduleWeekId: week.id,
+        startsAt: startsAt.toISOString(),
+        endsAt: endsAt.toISOString(),
+        requiredSkillId: skill.id,
+        headcount: command.headcount,
+        premium: command.premium,
+      },
+    });
+    const eventId = randomUUID();
+    await tx.insert(outboxEvents).values({
+      id: eventId,
+      channel: `private-location-${location.id}`,
+      event: "shift.created",
+      payload: { eventId, shiftId: created.id, locationId: location.id, weekId: week.id },
+    });
+    return { success: true as const, shiftId: created.id, eventIds: [eventId] };
+  });
+}
 
 export async function publishScheduleWeek(weekId: string, actor: EnrichedSession) {
   return db.transaction(async (tx) => {
@@ -57,14 +164,25 @@ export async function publishScheduleWeek(weekId: string, actor: EnrichedSession
       beforeState: { status: week.status, version: week.version },
       afterState: { status: "published", version: week.version + 1 },
     });
-    const eventId = randomUUID();
-    await tx.insert(outboxEvents).values({
-      id: eventId,
-      channel: `private-schedule-${week.id}`,
-      event: "schedule.published",
-      payload: { eventId, weekId: week.id, locationId: week.locationId, version: week.version + 1 },
+    const assignedStaff = await client.select({ staffId: assignments.staffId })
+      .from(assignments)
+      .innerJoin(shifts, eq(assignments.shiftId, shifts.id))
+      .where(and(eq(shifts.scheduleWeekId, week.id), eq(assignments.status, "assigned")));
+    const recipients = [...new Set(assignedStaff.map((assignment) => assignment.staffId))];
+    await dispatchNotifications(client, recipients.map((userId) => ({
+      userId,
+      type: "SCHEDULE_PUBLISHED",
+      title: "Schedule published",
+      message: `Your schedule for the week of ${week.weekStartDate} is ready.`,
+      link: `/schedule?week=${week.weekStartDate}#schedule-content`,
+    })));
+    const channels = [`private-location-${week.locationId}`, `private-schedule-${week.id}`, ...recipients.map((userId) => `private-user-${userId}`)];
+    const events = channels.map((channel) => {
+      const eventId = randomUUID();
+      return { id: eventId, channel, event: "schedule.published", payload: { eventId, weekId: week.id, locationId: week.locationId, version: week.version + 1 } };
     });
-    return { success: true as const, weekId: week.id };
+    await tx.insert(outboxEvents).values(events);
+    return { success: true as const, weekId: week.id, eventIds: events.map((event) => event.id) };
   });
 }
 
@@ -109,14 +227,25 @@ export async function unpublishScheduleWeek(weekId: string, actor: EnrichedSessi
       beforeState: { status: record.status, version: record.version },
       afterState: { status: "draft", version: record.version + 1 },
     });
-    const eventId = randomUUID();
-    await tx.insert(outboxEvents).values({
-      id: eventId,
-      channel: `private-schedule-${record.id}`,
-      event: "schedule.unpublished",
-      payload: { eventId, weekId: record.id, locationId: record.locationId, version: record.version + 1 },
+    const assignedStaff = await client.select({ staffId: assignments.staffId })
+      .from(assignments)
+      .innerJoin(shifts, eq(assignments.shiftId, shifts.id))
+      .where(and(eq(shifts.scheduleWeekId, record.id), eq(assignments.status, "assigned")));
+    const recipients = [...new Set(assignedStaff.map((assignment) => assignment.staffId))];
+    await dispatchNotifications(client, recipients.map((userId) => ({
+      userId,
+      type: "SCHEDULE_UNPUBLISHED",
+      title: "Schedule returned to draft",
+      message: "A manager unpublished this schedule week. It is no longer visible to staff.",
+      link: "/schedule#schedule-content",
+    })));
+    const channels = [`private-location-${record.locationId}`, `private-schedule-${record.id}`, ...recipients.map((userId) => `private-user-${userId}`)];
+    const events = channels.map((channel) => {
+      const eventId = randomUUID();
+      return { id: eventId, channel, event: "schedule.unpublished", payload: { eventId, weekId: record.id, locationId: record.locationId, version: record.version + 1 } };
     });
-    return { success: true as const, weekId: record.id };
+    await tx.insert(outboxEvents).values(events);
+    return { success: true as const, weekId: record.id, eventIds: events.map((event) => event.id) };
   });
 }
 
@@ -146,11 +275,13 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
     const headcount = command.headcount ?? current.shift.headcount;
     const locationId = command.locationId ?? current.shift.locationId;
     const requiredSkillId = command.requiredSkillId ?? current.shift.requiredSkillId;
+    const premium = command.premium ?? current.shift.premium;
     const structuralChange = startsAt.getTime() !== current.shift.startsAt.getTime()
       || endsAt.getTime() !== current.shift.endsAt.getTime()
       || headcount !== current.shift.headcount
       || locationId !== current.shift.locationId
-      || requiredSkillId !== current.shift.requiredSkillId;
+      || requiredSkillId !== current.shift.requiredSkillId
+      || premium !== current.shift.premium;
     if (!structuralChange) return { success: true as const, shiftId: current.shift.id };
     if (endsAt <= startsAt || headcount < 1) return { success: false as const, blockers: [blocker("INVALID_SHIFT_STRUCTURE", "Shift times and headcount are invalid.")] };
     if (current.weekStatus === "published" && current.shift.startsAt.getTime() - Date.now() < current.cutoffMinutes * 60_000) {
@@ -165,6 +296,43 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
     }
     const localStart = getLocalSnapshot(startsAt, timezone);
     const localEnd = getLocalSnapshot(endsAt, timezone);
+    const activeAssignments = await client.select({ id: assignments.id, staffId: assignments.staffId }).from(assignments).where(and(
+      eq(assignments.shiftId, current.shift.id),
+      eq(assignments.status, "assigned"),
+    ));
+    const proposedShift = {
+      ...current.shift,
+      startsAt,
+      endsAt,
+      headcount,
+      locationId,
+      requiredSkillId,
+      premium,
+      timezone,
+      localStartDate: localStart.date,
+      localStartTime: localStart.time,
+      localEndDate: localEnd.date,
+      localEndTime: localEnd.time,
+    };
+    const assignmentBlockers: ConstraintViolation[] = [];
+    for (const assignment of activeAssignments) {
+      const loaded = await loadEvaluationInput(client, {
+        shiftId: current.shift.id,
+        staffId: assignment.staffId,
+      }, {
+        headcountCredit: 1,
+        excludeAssignmentId: assignment.id,
+        shiftOverride: proposedShift,
+      });
+      if (loaded?.evaluation.blockers.length) {
+        assignmentBlockers.push(...loaded.evaluation.blockers.map((violation) => ({
+          ...violation,
+          details: { ...violation.details, staffId: assignment.staffId },
+        })));
+      }
+    }
+    if (assignmentBlockers.length) return { success: false as const, blockers: assignmentBlockers };
+
     const changedAt = new Date();
     await tx.update(shifts).set({
       startsAt,
@@ -172,6 +340,7 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
       locationId,
       requiredSkillId,
       headcount,
+      premium,
       timezone,
       localStartDate: localStart.date,
       localStartTime: localStart.time,
@@ -183,10 +352,6 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
     }).where(eq(shifts.id, current.shift.id));
 
     if (startsAt.getTime() !== current.shift.startsAt.getTime() || endsAt.getTime() !== current.shift.endsAt.getTime()) {
-      const activeAssignments = await client.select({ id: assignments.id, staffId: assignments.staffId }).from(assignments).where(and(
-        eq(assignments.shiftId, current.shift.id),
-        eq(assignments.status, "assigned"),
-      ));
       if (activeAssignments.length) {
         await tx.delete(assignmentPeriods).where(inArray(assignmentPeriods.assignmentId, activeAssignments.map((assignment) => assignment.id)));
         await tx.insert(assignmentPeriods).values(activeAssignments.map((assignment) => ({
@@ -277,6 +442,7 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
         locationId: current.shift.locationId,
         requiredSkillId: current.shift.requiredSkillId,
         headcount: current.shift.headcount,
+        premium: current.shift.premium,
         version: current.shift.version,
       },
       afterState: {
@@ -285,10 +451,25 @@ export async function updateShift(command: UpdateShiftCommand, actor: EnrichedSe
         locationId,
         requiredSkillId,
         headcount,
+        premium,
         version: current.shift.version + 1,
       },
     });
+    const affectedStaff = [...new Set(activeAssignments.map((assignment) => assignment.staffId))];
+    await dispatchNotifications(client, affectedStaff.map((userId) => ({
+      userId,
+      type: "SHIFT_UPDATED",
+      title: "Assigned shift changed",
+      message: "A manager changed the time, skill, location, or staffing requirement for one of your shifts.",
+      link: `/schedule?week=${current.weekStartDate}&shift=${current.shift.id}#shift-${current.shift.id}`,
+    })));
+    const channels = [`private-location-${locationId}`, ...affectedStaff.map((userId) => `private-user-${userId}`)];
+    const events = channels.map((channel) => {
+      const eventId = randomUUID();
+      return { id: eventId, channel, event: "shift.updated", payload: { eventId, shiftId: current.shift.id, locationId, weekId: current.shift.scheduleWeekId } };
+    });
+    await tx.insert(outboxEvents).values(events);
     await tx.update(scheduleWeeks).set({ version: sql`${scheduleWeeks.version} + 1`, updatedAt: changedAt }).where(eq(scheduleWeeks.id, current.shift.scheduleWeekId));
-    return { success: true as const, shiftId: current.shift.id };
+    return { success: true as const, shiftId: current.shift.id, eventIds: events.map((event) => event.id) };
   });
 }

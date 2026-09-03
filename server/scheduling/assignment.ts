@@ -1,11 +1,14 @@
-import { and, count, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, count, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/server/db";
 import {
   assignments,
   assignmentPeriods,
+  auditLogs,
   availabilityExceptions,
   availabilityRules,
   managerLocations,
+  outboxEvents,
   scheduleWeeks,
   shifts,
   staffLocationCertifications,
@@ -14,6 +17,7 @@ import {
 } from "@/server/db/schema";
 import type { EnrichedSession } from "@/server/auth/session";
 import { evaluateAssignment, type ConstraintViolation } from "./constraints";
+import { dispatchNotifications } from "@/server/notifications/service";
 
 export type AssignmentCommand = {
   shiftId: string;
@@ -37,9 +41,14 @@ export async function canManageLocation(client: typeof db, actor: EnrichedSessio
   return Boolean(scope);
 }
 
-export async function loadEvaluationInput(client: typeof db, command: AssignmentCommand, options: { headcountCredit?: number } = {}) {
+export async function loadEvaluationInput(client: typeof db, command: AssignmentCommand, options: {
+  headcountCredit?: number;
+  excludeAssignmentId?: string;
+  shiftOverride?: typeof shifts.$inferSelect;
+} = {}) {
   const [shift] = await client.select().from(shifts).where(and(eq(shifts.id, command.shiftId), eq(shifts.status, "active"))).limit(1);
   if (!shift) return null;
+  const candidateShift = options.shiftOverride ?? shift;
   const [staff, skills, certifications, rules, exceptions, existing, [headcount]] = await Promise.all([
     client.select().from(staffProfiles).where(eq(staffProfiles.userId, command.staffId)).limit(1).then((rows) => rows[0]),
     client.select().from(staffSkills).where(eq(staffSkills.staffId, command.staffId)),
@@ -55,12 +64,13 @@ export async function loadEvaluationInput(client: typeof db, command: Assignment
       eq(assignments.staffId, command.staffId),
       eq(assignments.status, "assigned"),
       eq(shifts.status, "active"),
+      options.excludeAssignmentId ? ne(assignments.id, options.excludeAssignmentId) : undefined,
     )),
     client.select({ value: count() }).from(assignments).where(and(eq(assignments.shiftId, command.shiftId), eq(assignments.status, "assigned"))),
   ]);
   if (!staff) return null;
   return {
-    shift,
+    shift: candidateShift,
     evaluation: evaluateAssignment({
       candidateStaff: {
         id: staff.userId,
@@ -85,13 +95,13 @@ export async function loadEvaluationInput(client: typeof db, command: Assignment
         })),
       },
       candidateShift: {
-        id: shift.id,
-        locationId: shift.locationId,
-        requiredSkillId: shift.requiredSkillId,
-        startsAt: shift.startsAt,
-        endsAt: shift.endsAt,
-        timezone: shift.timezone,
-        headcount: shift.headcount,
+        id: candidateShift.id,
+        locationId: candidateShift.locationId,
+        requiredSkillId: candidateShift.requiredSkillId,
+        startsAt: candidateShift.startsAt,
+        endsAt: candidateShift.endsAt,
+        timezone: candidateShift.timezone,
+        headcount: candidateShift.headcount,
       },
       existingAssignments: existing,
       activeAssignmentCount: Math.max(0, (headcount?.value ?? 0) - (options.headcountCredit ?? 0)),
@@ -164,7 +174,43 @@ export async function assignStaff(command: AssignmentCommand, actor: EnrichedSes
         version: sql`${scheduleWeeks.version} + 1`,
         updatedAt: new Date(),
       }).where(eq(scheduleWeeks.id, loaded.shift.scheduleWeekId));
-      return { success: true as const, assignmentId: assignment.id };
+      await tx.insert(auditLogs).values({
+        actorId: actor.session.user.id,
+        action: "STAFF_ASSIGNED",
+        entityType: "assignment",
+        entityId: assignment.id,
+        locationId: loaded.shift.locationId,
+        reason: command.managerOverride ? command.overrideReason!.trim() : null,
+        afterState: {
+          assignmentId: assignment.id,
+          shiftId: command.shiftId,
+          staffId: command.staffId,
+          managerOverride: command.managerOverride ?? false,
+        },
+      });
+      await dispatchNotifications(client, [{
+        userId: command.staffId,
+        type: "SHIFT_ASSIGNED",
+        title: "New shift assigned",
+        message: "A manager added you to a shift. Review the schedule for the location time and details.",
+        link: `/schedule?shift=${command.shiftId}#shift-${command.shiftId}`,
+      }]);
+      const events = [`private-location-${loaded.shift.locationId}`, `private-user-${command.staffId}`].map((channel) => {
+        const eventId = randomUUID();
+        return {
+          id: eventId,
+          channel,
+          event: "assignment.assigned",
+          payload: {
+            eventId,
+            assignmentId: assignment.id,
+            shiftId: command.shiftId,
+            staffId: command.staffId,
+          },
+        };
+      });
+      await tx.insert(outboxEvents).values(events);
+      return { success: true as const, assignmentId: assignment.id, eventIds: events.map((event) => event.id) };
     });
   } catch (error) {
     const databaseError = error as { code?: string; cause?: { code?: string } };

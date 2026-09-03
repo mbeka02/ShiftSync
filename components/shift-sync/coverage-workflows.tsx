@@ -197,7 +197,7 @@ export function StaffShiftCoverageActions({
 export function CoverageQueue({ requests, role }: { requests: CoverageRequestView[]; role: "staff" | "manager" }) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<CoverageRequestView | null>(null);
+  const [decision, setDecision] = useState<{ request: CoverageRequestView; action: "approve" | "reject" } | null>(null);
   const [blockers, setBlockers] = useState<Record<string, Blocker[]>>({});
   const [, startTransition] = useTransition();
   const visible = role === "manager"
@@ -207,9 +207,14 @@ export function CoverageQueue({ requests, role }: { requests: CoverageRequestVie
       || (request.type === "drop" && request.status === "open" && !request.isRequester)
       || request.isClaimant);
 
-  function act(request: CoverageRequestView) {
+  const readyRequests = visible.filter((request) => ["accepted_by_target", "claimed"].includes(request.status));
+  const waitingRequests = visible.filter((request) => !["accepted_by_target", "claimed"].includes(request.status));
+
+  function act(request: CoverageRequestView, managerDecision: "approve" | "reject" = "approve") {
     const action = role === "manager"
-      ? request.type === "swap" ? "approve-swap" as const : "approve-drop" as const
+      ? managerDecision === "reject"
+        ? "reject" as const
+        : request.type === "swap" ? "approve-swap" as const : "approve-drop" as const
       : request.type === "swap" ? "accept-swap" as const : "claim-drop" as const;
     setPendingId(request.id);
     setBlockers((current) => ({ ...current, [request.id]: [] }));
@@ -220,58 +225,87 @@ export function CoverageQueue({ requests, role }: { requests: CoverageRequestVie
         setBlockers((current) => ({ ...current, [request.id]: result.blockers }));
         return;
       }
-      toast.success(role === "manager" ? "Coverage approved" : request.type === "swap" ? "Swap accepted" : "Shift claimed", {
-        description: role === "manager" ? "The assignment transfer is now complete." : "The original assignment remains active until manager approval.",
+      const rejected = role === "manager" && managerDecision === "reject";
+      toast.success(rejected ? "Coverage declined" : role === "manager" ? "Coverage approved" : request.type === "swap" ? "Swap accepted" : "Shift claimed", {
+        description: rejected
+          ? "The original assignment remains unchanged."
+          : role === "manager" ? "The assignment transfer is now complete." : "The original assignment remains active until manager approval.",
       });
-      setConfirming(null);
+      setDecision(null);
       router.refresh();
     });
   }
 
+  function requestRow(request: CoverageRequestView) {
+    const ready = role === "manager"
+      ? ["accepted_by_target", "claimed"].includes(request.status)
+      : (request.status === "pending_target" && request.isTarget) || (request.status === "open" && !request.isRequester);
+    const replacement = request.type === "swap" ? request.targetName : request.claimantName;
+    const when = new Date(request.startsAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: request.timezone });
+    return (
+      <article id={`coverage-request-${request.id}`} key={request.id} className="scroll-mt-6 grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-primary">{request.type}</span>
+            <span className="text-[11px] text-muted-foreground">{statusCopy[request.status]}</span>
+          </div>
+          <p className="mt-1 text-sm font-semibold">{request.skillName} · {request.locationName}</p>
+          <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><Clock3 className="size-3" />{when}</p>
+          <p className="mt-2 text-xs leading-5">{request.requesterName}{replacement ? ` → ${replacement}` : " is looking for coverage"}</p>
+          {request.reason ? <p className="mt-1 text-xs italic text-muted-foreground">“{request.reason}”</p> : null}
+          {blockerPanel(blockers[request.id] ?? [])}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
+          {ready ? role === "manager" ? (
+            <>
+              <Button size="sm" onClick={() => setDecision({ request, action: "approve" })} disabled={pendingId === request.id}>
+                <ShieldCheck className="size-4" /> Approve transfer
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setDecision({ request, action: "reject" })} disabled={pendingId === request.id}>
+                <X className="size-4" /> Reject
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" onClick={() => act(request)} disabled={pendingId === request.id}>
+              <Check className="size-4" />
+              {pendingId === request.id ? "Checking…" : request.type === "swap" ? "Accept swap" : "Claim shift"}
+            </Button>
+          ) : <span className="text-xs text-muted-foreground">Awaiting replacement staff</span>}
+        </div>
+      </article>
+    );
+  }
+
+  function managerLane(title: string, note: string, laneRequests: CoverageRequestView[], actionable: boolean) {
+    return (
+      <div className={actionable ? "" : "border-t"}>
+        <div className="flex items-end justify-between gap-4 bg-[var(--surface-subtle)] px-4 py-2.5">
+          <div><h3 className="text-xs font-semibold">{title}</h3><p className="mt-0.5 text-[11px] text-muted-foreground">{note}</p></div>
+          <span className="font-mono text-[10px] text-muted-foreground">{laneRequests.length}</span>
+        </div>
+        {laneRequests.length ? <div className="divide-y">{laneRequests.map(requestRow)}</div> : (
+          <p className="px-4 py-5 text-xs text-muted-foreground">{actionable ? "No transfers need a decision." : "No requests are waiting on another staff member."}</p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <>
-    <section className="mt-8 border bg-white" aria-labelledby={`${role}-coverage-title`}>
+    <section id="coverage-desk" className="mt-8 scroll-mt-6 border bg-white" aria-labelledby={`${role}-coverage-title`}>
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div>
           <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-primary">Coverage desk</p>
-          <h2 id={`${role}-coverage-title`} className="font-heading text-xl uppercase tracking-wide">{role === "manager" ? "Requests awaiting action" : "Coverage opportunities"}</h2>
+          <h2 id={`${role}-coverage-title`} className="font-heading text-xl uppercase tracking-wide">{role === "manager" ? "Coverage requests" : "Coverage opportunities"}</h2>
         </div>
         <span className="font-mono text-xs text-muted-foreground">{visible.length}</span>
       </div>
-      {visible.length ? (
-        <div className="divide-y">
-          {visible.map((request) => {
-            const ready = role === "manager"
-              ? ["accepted_by_target", "claimed"].includes(request.status)
-              : (request.status === "pending_target" && request.isTarget) || (request.status === "open" && !request.isRequester);
-            const replacement = request.type === "swap" ? request.targetName : request.claimantName;
-            const when = new Date(request.startsAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: request.timezone });
-            return (
-              <article id={`coverage-request-${request.id}`} key={request.id} className="scroll-mt-6 grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-primary">{request.type}</span>
-                    <span className="text-[11px] text-muted-foreground">{statusCopy[request.status]}</span>
-                  </div>
-                  <p className="mt-1 text-sm font-semibold">{request.skillName} · {request.locationName}</p>
-                  <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><Clock3 className="size-3" />{when}</p>
-                  <p className="mt-2 text-xs leading-5">{request.requesterName}{replacement ? ` → ${replacement}` : " is looking for coverage"}</p>
-                  {request.reason ? <p className="mt-1 text-xs italic text-muted-foreground">“{request.reason}”</p> : null}
-                  {blockerPanel(blockers[request.id] ?? [])}
-                </div>
-                <div className="md:text-right">
-                  {ready ? (
-                    <Button size="sm" onClick={() => role === "manager" ? setConfirming(request) : act(request)} disabled={pendingId === request.id}>
-                      {role === "manager" ? <ShieldCheck className="size-4" /> : <Check className="size-4" />}
-                      {pendingId === request.id ? "Checking…" : role === "manager" ? "Approve transfer" : request.type === "swap" ? "Accept swap" : "Claim shift"}
-                    </Button>
-                  ) : <span className="text-xs text-muted-foreground">No manager action yet</span>}
-                </div>
-              </article>
-            );
-          })}
+      {visible.length ? role === "manager" ? (
+        <div>
+          {managerLane("Ready for approval", "A coworker has agreed to take the shift.", readyRequests, true)}
+          {managerLane("Waiting for coworker", "These remain visible for awareness; no manager decision is available yet.", waitingRequests, false)}
         </div>
-      ) : (
+      ) : <div className="divide-y">{visible.map(requestRow)}</div> : (
         <div className="px-6 py-10 text-center">
           <HandHelping className="mx-auto size-6 text-primary" />
           <p className="mt-3 text-sm font-semibold">Nothing needs attention</p>
@@ -279,21 +313,21 @@ export function CoverageQueue({ requests, role }: { requests: CoverageRequestVie
         </div>
       )}
     </section>
-    <Dialog open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
+    <Dialog open={decision !== null} onOpenChange={(open) => { if (!open) setDecision(null); }}>
       <DialogContent>
         <DialogHeader>
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">Manager approval</p>
-          <DialogTitle>Approve assignment transfer?</DialogTitle>
-          <DialogDescription>Eligibility and schedule constraints will be checked again inside the approval transaction.</DialogDescription>
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">Manager decision</p>
+          <DialogTitle>{decision?.action === "reject" ? "Reject this transfer?" : "Approve assignment transfer?"}</DialogTitle>
+          <DialogDescription>{decision?.action === "reject" ? "Both staff members will be notified and the original assignment will remain active." : "Eligibility and schedule constraints will be checked again inside the approval transaction."}</DialogDescription>
         </DialogHeader>
-        {confirming ? (
-          <div className="border-l-2 border-primary bg-[var(--surface-subtle)] px-3 py-3 text-xs leading-5">
-            <strong>{confirming.requesterName}</strong> will be removed from the shift. <strong>{confirming.type === "swap" ? confirming.targetName : confirming.claimantName}</strong> will become the assigned staff member only if every constraint still passes.
+        {decision ? (
+          <div className={`border-l-2 px-3 py-3 text-xs leading-5 ${decision.action === "reject" ? "border-[var(--danger-border)] bg-[var(--danger-bg)]" : "border-primary bg-[var(--surface-subtle)]"}`}>
+            {decision.action === "reject" ? <><strong>{decision.request.requesterName}</strong> keeps the shift; no assignment changes.</> : <><strong>{decision.request.requesterName}</strong> will be removed from the shift. <strong>{decision.request.type === "swap" ? decision.request.targetName : decision.request.claimantName}</strong> will become the assigned staff member only if every constraint still passes.</>}
           </div>
         ) : null}
         <DialogFooter>
-          <Button variant="outline" onClick={() => setConfirming(null)} disabled={Boolean(pendingId)}>Keep pending</Button>
-          <Button onClick={() => { if (confirming) act(confirming); }} disabled={Boolean(pendingId)}><ShieldCheck className="size-4" />{pendingId ? "Checking…" : "Approve transfer"}</Button>
+          <Button variant="outline" onClick={() => setDecision(null)} disabled={Boolean(pendingId)}>Keep pending</Button>
+          <Button variant={decision?.action === "reject" ? "destructive" : "default"} onClick={() => { if (decision) act(decision.request, decision.action); }} disabled={Boolean(pendingId)}>{decision?.action === "reject" ? <X className="size-4" /> : <ShieldCheck className="size-4" />}{pendingId ? "Saving…" : decision?.action === "reject" ? "Reject transfer" : "Approve transfer"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

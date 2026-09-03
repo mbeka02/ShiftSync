@@ -6,7 +6,6 @@ import {
   assignments,
   auditLogs,
   coverageRequests,
-  notifications,
   outboxEvents,
   scheduleWeeks,
   shifts,
@@ -15,6 +14,7 @@ import {
 import type { EnrichedSession } from "@/server/auth/session";
 import { canManageLocation, loadEvaluationInput } from "@/server/scheduling/assignment";
 import type { ConstraintViolation } from "@/server/scheduling/constraints";
+import { dispatchNotifications } from "@/server/notifications/service";
 
 type SwapCommand = { shiftId: string; targetStaffId: string; reason?: string };
 type DropCommand = { shiftId: string; reason?: string };
@@ -61,11 +61,13 @@ async function appendAuditAndEvent(client: typeof db, values: {
   afterStatus: string;
   recipients?: string[];
 }) {
+  const [shift] = await client.select({ locationId: shifts.locationId }).from(shifts).where(eq(shifts.id, values.shiftId)).limit(1);
   await client.insert(auditLogs).values({
     actorId: values.actorId,
     action: values.action,
     entityType: "coverage_request",
     entityId: values.requestId,
+    locationId: shift?.locationId,
     beforeState: values.beforeStatus ? { status: values.beforeStatus } : null,
     afterState: { status: values.afterStatus, shiftId: values.shiftId },
   });
@@ -146,13 +148,13 @@ async function createRequest(command: SwapCommand | DropCommand, actor: Enriched
     }).returning({ id: coverageRequests.id });
 
     if (targetStaffId) {
-      await tx.insert(notifications).values({
+      await dispatchNotifications(client, [{
         userId: targetStaffId,
         type: "SWAP_REQUEST_RECEIVED",
         title: "Swap request received",
         message: "A coworker asked you to take one of their shifts.",
         link: `/schedule?week=${ownedShift.weekStartDate}&shift=${command.shiftId}#shift-${command.shiftId}`,
-      });
+      }]);
     }
     await appendAuditAndEvent(client, {
       actorId: requesterStaffId,
@@ -191,13 +193,13 @@ export async function acceptSwapRequest(requestId: string, actor: EnrichedSessio
       acceptedAt,
       version: sql`${coverageRequests.version} + 1`,
     }).where(eq(coverageRequests.id, request.id));
-    await tx.insert(notifications).values({
+    await dispatchNotifications(client, [{
       userId: request.requesterStaffId,
       type: "SWAP_REQUEST_ACCEPTED",
       title: "Swap accepted",
       message: "Your coworker accepted the swap. A manager still needs to approve it.",
       link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
-    });
+    }]);
     await appendAuditAndEvent(client, {
       actorId: actor.session.user.id,
       action: "SWAP_REQUEST_ACCEPTED",
@@ -245,13 +247,13 @@ export async function claimDropRequest(requestId: string, actor: EnrichedSession
       acceptedAt,
       version: sql`${coverageRequests.version} + 1`,
     }).where(eq(coverageRequests.id, request.id));
-    await tx.insert(notifications).values({
+    await dispatchNotifications(client, [{
       userId: request.requesterStaffId,
       type: "DROP_REQUEST_CLAIMED",
       title: "Drop request claimed",
       message: "A coworker offered to cover your shift. A manager still needs to approve it.",
       link: `/schedule?shift=${request.shiftId}#shift-${request.shiftId}`,
-    });
+    }]);
     await appendAuditAndEvent(client, {
       actorId: actor.session.user.id,
       action: "DROP_REQUEST_CLAIMED",
@@ -324,7 +326,7 @@ async function approveRequest(requestId: string, actor: EnrichedSession, type: C
         updatedAt: approvedAt,
       }).where(eq(scheduleWeeks.id, shift.scheduleWeekId));
 
-      await tx.insert(notifications).values([
+      await dispatchNotifications(client, [
         {
           userId: request.requesterStaffId,
           type: "COVERAGE_REQUEST_APPROVED",
@@ -388,7 +390,7 @@ export async function cancelCoverageRequest(requestId: string, actor: EnrichedSe
     }).where(eq(coverageRequests.id, request.id));
     const affected = [request.targetStaffId, request.claimantStaffId].filter((id): id is string => Boolean(id));
     if (affected.length) {
-      await tx.insert(notifications).values(affected.map((userId) => ({
+      await dispatchNotifications(client, affected.map((userId) => ({
         userId,
         type: "COVERAGE_REQUEST_CANCELLED",
         title: "Coverage request cancelled",

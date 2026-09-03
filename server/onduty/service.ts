@@ -74,6 +74,7 @@ export async function clockInStaff(command: { assignmentId: string }, actor: Enr
         action: "STAFF_CLOCKED_IN",
         entityType: "time_entry",
         entityId: entry.id,
+        locationId: assignment.locationId,
         afterState: { assignmentId: assignment.id, shiftId: assignment.shiftId, locationId: assignment.locationId, clockInAt: clockInAt.toISOString() },
       });
       const eventId = randomUUID();
@@ -113,6 +114,7 @@ export async function clockOutStaff(command: { timeEntryId: string }, actor: Enr
       action: "STAFF_CLOCKED_OUT",
       entityType: "time_entry",
       entityId: entry.id,
+      locationId: entry.locationId,
       beforeState: { clockOutAt: null },
       afterState: { clockOutAt: clockOutAt.toISOString() },
     });

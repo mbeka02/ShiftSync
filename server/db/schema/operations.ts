@@ -1,5 +1,6 @@
 import { boolean, index, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { user } from "./auth";
+import { locations } from "./scheduling";
 
 export const outboxStatus = pgEnum("outbox_status", ["pending", "delivered", "failed"]);
 
@@ -11,10 +12,14 @@ export const auditLogs = pgTable("audit_logs", {
   entityId: text("entity_id").notNull(),
   beforeState: jsonb("before_state").$type<Record<string, unknown>>(),
   afterState: jsonb("after_state").$type<Record<string, unknown>>(),
+  reason: text("reason"),
+  locationId: uuid("location_id").references(() => locations.id),
+  requestId: uuid("request_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("audit_logs_entity_created_idx").on(table.entityType, table.entityId, table.createdAt),
   index("audit_logs_actor_created_idx").on(table.actorId, table.createdAt),
+  index("audit_logs_location_created_idx").on(table.locationId, table.createdAt),
 ]);
 
 export const notifications = pgTable("notifications", {

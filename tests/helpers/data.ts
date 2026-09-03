@@ -9,14 +9,16 @@ import {
   scheduleWeeks,
   shifts,
   skills,
+  staffLocationCertifications,
+  staffSkills,
   userRoles,
 } from "@/server/db/schema";
 import { getLocalSnapshot } from "@/server/scheduling/time";
 
-export async function createTestLocation(data: { name: string; timezone: string } = { name: "Test Location", timezone: "UTC" }) {
+export async function createTestLocation(data: { name?: string; timezone?: string } = {}) {
   const [location] = await db.insert(locations).values({
-    name: `${data.name} · ${randomUUID().slice(0, 8)}`,
-    timezone: data.timezone,
+    name: `${data.name ?? "Test Location"} · ${randomUUID().slice(0, 8)}`,
+    timezone: data.timezone ?? "UTC",
   }).returning({ id: locations.id });
   return location.id;
 }
@@ -51,6 +53,22 @@ export async function createTestSkill(data: { code: string; name: string } = { c
   return skill.id;
 }
 
+export async function certifyStaffForLocation(staffId: string, locationId: string) {
+  await db.insert(staffLocationCertifications).values({
+    staffId,
+    locationId,
+    validFrom: "1970-01-01",
+  });
+}
+
+export async function assignSkillToStaff(staffId: string, skillId: string) {
+  await db.insert(staffSkills).values({
+    staffId,
+    skillId,
+    validFrom: "1970-01-01",
+  });
+}
+
 export async function createShift(data: {
   scheduleWeekId: string;
   locationId: string;
@@ -59,6 +77,7 @@ export async function createShift(data: {
   endsAt?: Date;
   timezone?: string;
   updatedBy?: string;
+  isPremium?: boolean;
 }) {
   let updatedBy = data.updatedBy;
   if (!updatedBy) {
@@ -82,6 +101,7 @@ export async function createShift(data: {
     endsAt,
     timezone,
     updatedBy,
+    premium: data.isPremium ?? false,
     localStartDate: start.date,
     localStartTime: start.time,
     localEndDate: end.date,

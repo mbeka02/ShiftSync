@@ -6,4 +6,4 @@ export function proxy(request: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/schedule/:path*"] };
+export const config = { matcher: ["/schedule/:path*", "/analytics/:path*", "/api/admin/audit/export"] };

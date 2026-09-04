@@ -2,7 +2,7 @@
 
 ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a fictional restaurant group operating four locations across Eastern and Pacific time. It helps managers build safe, explainable schedules while giving staff a clear path through coverage, notifications, and on-duty work.
 
-The project follows one central rule: PostgreSQL is the SSOT(Single Source of Truth). Every important mutation is authorized and revalidated in a transaction; realtime events tell clients when to refetch that committed state.
+The project follows one central rule: Postgres is the SSOT(Single Source of Truth). Every important mutation is authorized and revalidated in a transaction; realtime events tell clients when to refetch that committed state.
 
 **[Open the live demo](https://shift-sync-theta.vercel.app)** · [View the source](https://github.com/mbeka02/ShiftSync)
 

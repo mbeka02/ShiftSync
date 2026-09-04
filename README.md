@@ -2,7 +2,7 @@
 
 ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a fictional restaurant group operating four locations across Eastern and Pacific time. It helps managers build safe, explainable schedules while giving staff a clear path through coverage, notifications, and on-duty work.
 
-The project follows one central rule: PostgreSQL owns the truth. Every important mutation is authorized and revalidated in a transaction; realtime events tell clients when to refetch that committed state.
+The project follows one central rule: PostgreSQL is the SSOT(Single Source of Truth). Every important mutation is authorized and revalidated in a transaction; realtime events tell clients when to refetch that committed state.
 
 **[Open the live demo](https://shift-sync-theta.vercel.app)** · [View the source](https://github.com/mbeka02/ShiftSync)
 
@@ -31,31 +31,31 @@ Coastal Eats needs one reliable view of staffing across locations. Without it, c
 
 ShiftSync serves three roles:
 
-- **Admins** have cross-location oversight, analytics, and audit export access.
-- **Managers** manage their assigned locations, create and publish schedules, evaluate candidates, approve or reject coverage requests, and monitor on-duty staff.
-- **Staff** see their published schedule, clock in and out, request swaps or drops, claim eligible coverage, and receive persisted notifications.
+- **Admins**: can have cross-location oversight, analytics, and audit export access.
+- **Managers**: can manage their assigned locations, create and publish schedules, evaluate candidates, approve or reject coverage requests, and monitor on-duty staff.
+- **Staff**: can see their published schedule, clock in and out, request swaps or drops, claim eligible coverage, and receive notifications.
 
 The system assists human schedulers rather than generating schedules automatically. Candidate previews expose the specific blockers, warnings, projected hours, and qualified alternatives behind each decision.
 
 ## Key Features
 
-- **Role- and location-scoped access** backed by Better Auth database sessions and server-side authorization.
-- **Multi-location weekly schedules** with manager location switching, week navigation, draft/published states, and a configurable edit cutoff.
-- **Explainable assignment checks** for skills, certification, availability, overlap, 10-hour rest, headcount, daily hours, weekly hours, and consecutive days.
-- **What-if candidate review** showing projected daily/weekly hours, overtime, work streaks, blockers, and warnings before commit.
-- **Manager shift controls** for timezone-safe creation and material edits, including audited seventh-day overrides and emergency coverage.
-- **Coverage state machines** for targeted swaps and open drops, with acceptance/claim, manager approval or rejection, cancellation, expiry, pending limits, and shift-edit invalidation.
-- **Overtime and fairness analytics** with threshold-causing assignment evidence, projected overtime premium, desired-hours deltas, and opportunity-normalized premium-shift allocation.
-- **Realtime operational updates** through authorized Pusher channels, transactional outbox retry, event deduplication, focus/reconnect refresh, and a 25-second visible-tab polling fallback.
-- **On-duty state** with one-open-entry enforcement, staff clock-in/out controls, and a live location dashboard.
-- **Persisted communication and audit evidence** with read/unread notifications, delivery preferences, append-only audit records, and role-scoped CSV export.
-- **Timezone-safe storage** using UTC instants as scheduling authority plus IANA timezone and local wall-clock snapshots for display and DST review.
+- **Role- and location-scoped access**: backed by Better Auth database sessions and server-side authorization.
+- **Multi-location weekly schedules**: with manager location switching, week navigation, draft/published states, and a configurable edit cutoff.
+- **Explainable assignment checks**: for skills, certification, availability, overlap, 10-hour rest, headcount, daily hours, weekly hours, and consecutive days.
+- **What-if candidate review**: showing projected daily/weekly hours, overtime, work streaks, blockers, and warnings before commit.
+- **Manager shift controls**: for timezone-safe creation and material edits, including audited seventh-day overrides and emergency coverage.
+- **Coverage state machines**: for targeted swaps and open drops, with acceptance/claim, manager approval or rejection, cancellation, expiry, pending limits, and shift-edit invalidation.
+- **Overtime and fairness analytics**: with threshold-causing assignment evidence, projected overtime premium, desired-hours deltas, and opportunity-normalized premium-shift allocation.
+- **Realtime operational updates**: through authorized Pusher channels, transactional outbox retry, event deduplication, focus/reconnect refresh, and a 25-second visible-tab polling fallback.
+- **On-duty state**: with one-open-entry enforcement, staff clock-in/out controls, and a live location dashboard.
+- **Persisted communication and audit evidence**: with read/unread notifications, delivery preferences, append-only audit records, and role-scoped CSV export.
+- **Timezone-safe storage**: using UTC instants as scheduling authority plus IANA timezone and local wall-clock snapshots for display and DST review.
 
 ## Demo Accounts
 
 The deterministic seed creates four locations, two managers, twenty staff members, two schedule weeks per location, and fixtures for overtime, fairness, emergency coverage, coverage approval, on-duty state, historical certification, and concurrency.
 
-All demo accounts use the password **`ShiftSyncDemo!2026`**.
+All demo accounts use the same password **`ShiftSyncDemo!2026`**.
 
 | Role / scenario | Email | Useful scope |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ To restore deterministic passwords and fixtures locally, rerun the guarded devel
 
 ## System Design
 
-ShiftSync is a modular monolith. One Next.js application owns the Harbor Calm interface, authenticated entry points, domain services, persistence, and integration adapters. This keeps scheduling rules independent of React and ensures browser actions and tests exercise the same services.
+I built ShiftSync as a modular monolith. One Next.js app owns the interface, authenticated entry points, domain services, persistence, and integration adapters. This keeps scheduling rules independent of React and ensures browser actions and tests exercise the same services.
 
 ### Architecture
 
@@ -312,9 +312,9 @@ The project uses three long-lived Neon branches:
 
 ### Production Deployment
 
-Configure Vercel with the pooled and direct URLs for the Neon `production` branch, set `NEON_BRANCH=production`, and provide the production Better Auth, Pusher, and outbox secrets. Changing `NEON_BRANCH` alone does not switch databases—the two Neon URLs must also target production.
+Configure Vercel with the pooled and direct URLs for the Neon `production` branch, set `NEON_BRANCH=production`, and provide the production Better Auth, Pusher, and outbox secrets.
 
-The included Vercel Cron runs once daily at `10:00 UTC`, which fits the Hobby plan's daily-job limit. With `DEMO_REFRESH_ENABLED=true` and `CRON_SECRET` configured, it closes stale on-duty entries, expires stale coverage, and rebuilds only the current and following demo schedule weeks. It does not recreate accounts, roles, locations, skills, or historical schedule data.
+The included Vercel Cron runs once daily at `10:00 UTC`. With `DEMO_REFRESH_ENABLED=true` and `CRON_SECRET` configured, it closes stale on-duty entries, expires stale coverage, and rebuilds only the current and following demo schedule weeks. It does not recreate accounts, roles, locations, skills, or historical schedule data.
 
 Production bootstrap is a deliberately destructive, one-time operation:
 
@@ -365,17 +365,15 @@ The project was delivered in vertical slices using Red → Green → Review/Refa
 
 ### Verification hierarchy
 
-1. **Pure Vitest checks** exercise deterministic constraint calculations and time handling.
-2. **Transactional integration tests** run against the isolated Neon `test` branch with real migrations, foreign keys, row locks, exclusion constraints, rollback, RBAC, and audit/outbox atomicity.
-3. **Static gates** run `pnpm exec tsc --noEmit` and `pnpm lint` before a production build.
-4. **Playwright evaluator flows** rebuild deterministic development data and walk the six named challenge scenarios through authenticated browser sessions.
-5. **Live adapter smoke tests** verify the Neon WebSocket transaction path and Pusher transport/private-channel boundary.
+1. **Pure Vitest checks**: exercise deterministic constraint calculations and time handling.
+2. **Transactional integration tests**: run against the isolated Neon `test` branch with real migrations, foreign keys, row locks, exclusion constraints, rollback, RBAC, and audit/outbox atomicity.
+3. **Static gates**: run `pnpm exec tsc --noEmit` and `pnpm lint` before a production build.
+4. **Playwright evaluator flows**: rebuild deterministic development data and walk the six named challenge scenarios through authenticated browser sessions.
+5. **Live adapter smoke tests**: verify the Neon WebSocket transaction path and Pusher transport/private-channel boundary.
 
 The suites are intentionally separated by Neon branch: normal development uses `development`, integration tests use `test`, and Vercel uses `production`. Guard scripts fail closed when a command and branch label do not match.
 
 ## Design Decisions and Assumptions
-
-The challenge deliberately leaves five behaviors unspecified. ShiftSync makes each decision explicit:
 
 | Ambiguity | Decision | Reason |
 | --- | --- | --- |

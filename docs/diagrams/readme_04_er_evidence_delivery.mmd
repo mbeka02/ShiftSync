@@ -1,0 +1,18 @@
+erDiagram
+    USER ||--o{ SESSION : "opens"
+    USER ||--o{ ACCOUNT : "authenticates with"
+    USER ||--o{ NOTIFICATION : "receives"
+    USER ||--o{ AUDIT_LOG : "performs"
+    LOCATION o|--o{ AUDIT_LOG : "may scope"
+
+    VERIFICATION {
+        text identifier
+        timestamp expires_at
+    }
+    OUTBOX_EVENT {
+        uuid id PK
+        text channel
+        text event
+        jsonb payload
+        enum status
+    }

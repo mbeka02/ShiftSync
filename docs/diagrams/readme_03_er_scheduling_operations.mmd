@@ -1,0 +1,11 @@
+erDiagram
+    LOCATION ||--o{ SCHEDULE_WEEK : "owns"
+    SCHEDULE_WEEK ||--o{ SHIFT : "contains"
+    LOCATION ||--o{ SHIFT : "hosts"
+    SKILL ||--o{ SHIFT : "requires"
+    SHIFT ||--o{ ASSIGNMENT : "fills"
+    STAFF_PROFILE ||--o{ ASSIGNMENT : "works"
+    ASSIGNMENT ||--|| ASSIGNMENT_PERIOD : "reserves"
+    ASSIGNMENT ||--o{ TIME_ENTRY : "records"
+    SHIFT ||--o{ COVERAGE_REQUEST : "concerns"
+    STAFF_PROFILE ||--o{ COVERAGE_REQUEST : "participates"

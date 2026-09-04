@@ -1,0 +1,33 @@
+flowchart LR
+    People["Admins · Managers · Staff"]
+    UI["Role-aware<br/>Next.js UI"]
+    Entry["Server Components<br/>Actions · Route Handlers<br/>Better Auth + RBAC"]
+    Domain["Domain services<br/>Shared constraint engine"]
+    Neon[("Neon PostgreSQL<br/>authoritative state")]
+    Delivery["Outbox drain"]
+    Pusher["Pusher<br/>private channels"]
+    Refresh["Client invalidation<br/>+ authoritative refetch"]
+    Cron["Vercel Cron"]
+    Demo["Rolling demo refresh"]
+
+    People --> UI
+    UI -->|"authenticated request"| Entry
+    Entry --> Domain
+    Domain -->|"domain + evidence + outbox transaction"| Neon
+    Neon -->|"committed pending events"| Delivery
+    Delivery --> Pusher
+    Pusher --> Refresh
+    Cron -->|"daily"| Demo
+    Demo -->|"replace rolling fixtures"| Neon
+
+    classDef actor fill:#FFF4D6,stroke:#8A5A00,stroke-width:2px,color:#2B2118
+    classDef client fill:#E5F3F1,stroke:#176B68,stroke-width:2px,color:#123B3A
+    classDef application fill:#DCECEF,stroke:#164C5A,stroke-width:2px,color:#102F38
+    classDef data fill:#E8E2F2,stroke:#594778,stroke-width:2px,color:#2B2340
+    classDef external fill:#F4E7E2,stroke:#8A4B3A,stroke-width:2px,color:#41231C
+
+    class People actor
+    class UI,Refresh client
+    class Entry,Domain,Delivery,Demo application
+    class Neon data
+    class Pusher,Cron external

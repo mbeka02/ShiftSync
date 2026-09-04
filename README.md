@@ -4,6 +4,8 @@ ShiftSync is a multi-location staff scheduling platform for **Coastal Eats**, a 
 
 The project follows one central rule: PostgreSQL owns the truth. Every important mutation is authorized and revalidated in a transaction; realtime events tell clients when to refetch that committed state.
 
+**[Open the live demo](https://shift-sync-theta.vercel.app)** · [View the source](https://github.com/mbeka02/ShiftSync)
+
 ## Table of Contents
 
 - [Project Overview](#project-overview)
@@ -12,12 +14,13 @@ The project follows one central rule: PostgreSQL owns the truth. Every important
 - [System Design](#system-design)
   - [Architecture](#architecture)
   - [Database Design](#database-design)
-  - [Integrity and Concurrency](#integrity-and-concurrency)
+  - [Data Model and Schema Constraints](#data-model-and-schema-constraints)
 - [Tech Stack](#tech-stack)
 - [Installation and Setup](#installation-and-setup)
   - [Neon Branch Isolation](#neon-branch-isolation)
   - [Production Deployment](#production-deployment)
 - [Available Scripts](#available-scripts)
+- [Implementation and Testing Strategy](#implementation-and-testing-strategy)
 - [Design Decisions and Assumptions](#design-decisions-and-assumptions)
 - [Evaluation Scenarios](#evaluation-scenarios)
 - [Known Limitations](#known-limitations)
@@ -63,7 +66,9 @@ All demo accounts use the password **`ShiftSyncDemo!2026`**.
 | Staff — Jordan Lee | `coverage@shiftsync.local` | Coverage claim/acceptance workflow |
 | Staff — Casey Wright | `casey@shiftsync.local` | Accepted swap and Regret Swap workflow |
 
-The same credentials are intended for the public evaluation deployment. To restore deterministic passwords and fixtures locally, rerun the guarded development seed or rebuild command described below; both replace current development demo data.
+The same credentials are intended for the public evaluation deployment. A guarded daily refresh keeps the production demo's current and following schedule weeks aligned with the calendar without recreating identities or historical records. The logins remain stable, but changes made to those rolling scenario weeks may be replaced by the next refresh.
+
+To restore deterministic passwords and fixtures locally, rerun the guarded development seed or rebuild command described below; both replace current development demo data.
 
 ## System Design
 
@@ -72,91 +77,116 @@ ShiftSync is a modular monolith. One Next.js application owns the Harbor Calm in
 ### Architecture
 
 ```mermaid
-flowchart TB
-    subgraph Users
-        Admin[Admin]
-        Manager[Manager]
-        Staff[Staff]
-    end
+flowchart LR
+    People["Admins · Managers · Staff"]
+    UI["Role-aware<br/>Next.js UI"]
+    Entry["Server Components<br/>Actions · Route Handlers<br/>Better Auth + RBAC"]
+    Domain["Domain services<br/>Shared constraint engine"]
+    Neon[("Neon PostgreSQL<br/>authoritative state")]
+    Delivery["Outbox drain"]
+    Pusher["Pusher<br/>private channels"]
+    Refresh["Client invalidation<br/>+ authoritative refetch"]
+    Cron["Vercel Cron"]
+    Demo["Rolling demo refresh"]
 
-    subgraph Browser
-        UI[Role-aware Next.js UI<br/>Harbor Calm + shadcn/ui]
-        Refresh[Realtime refresh bridge<br/>dedupe + focus + 25s fallback]
-    end
-
-    subgraph Application[Next.js application]
-        Entry[Server Components<br/>Server Actions<br/>Route Handlers]
-        Auth[Better Auth<br/>sessions + RBAC]
-        Domain[Domain services<br/>scheduling + coverage + reports + on-duty]
-        Constraints[Constraint engine<br/>blockers + warnings + impact]
-        Drain[Outbox delivery<br/>immediate attempt + bounded retry]
-    end
-
-    subgraph Neon[Neon PostgreSQL]
-        Production[(production branch)]
-        Development[(development branch)]
-        Test[(test branch)]
-        Outbox[(transactional outbox)]
-    end
-
-    Pusher[Pusher private channels]
-
-    Admin --> UI
-    Manager --> UI
-    Staff --> UI
-    UI --> Entry
-    Entry --> Auth
+    People --> UI
+    UI -->|"authenticated request"| Entry
     Entry --> Domain
-    Domain --> Constraints
-    Domain --> Development
-    Domain --> Production
-    Domain --> Outbox
-    Test -. isolated integration tests .-> Domain
-    Outbox --> Drain
-    Drain --> Pusher
+    Domain -->|"domain + evidence + outbox transaction"| Neon
+    Neon -->|"committed pending events"| Delivery
+    Delivery --> Pusher
     Pusher --> Refresh
-    Refresh --> UI
-    Refresh -. refetch committed state .-> Entry
+    Cron -->|"daily"| Demo
+    Demo -->|"replace rolling fixtures"| Neon
+
+    classDef actor fill:#FFF4D6,stroke:#8A5A00,stroke-width:2px,color:#2B2118
+    classDef client fill:#E5F3F1,stroke:#176B68,stroke-width:2px,color:#123B3A
+    classDef application fill:#DCECEF,stroke:#164C5A,stroke-width:2px,color:#102F38
+    classDef data fill:#E8E2F2,stroke:#594778,stroke-width:2px,color:#2B2340
+    classDef external fill:#F4E7E2,stroke:#8A4B3A,stroke-width:2px,color:#41231C
+
+    class People actor
+    class UI,Refresh client
+    class Entry,Domain,Delivery,Demo application
+    class Neon data
+    class Pusher,Cron external
 ```
 
-Pusher messages are invalidation hints, not alternate state. If delivery is delayed or a tab sleeps, reconnect, focus, and visible-tab polling still converge the interface on PostgreSQL.
+[View the architecture Mermaid source](docs/diagrams/readme_01_flowchart_architecture.mmd).
+
+The deployment selects exactly one Neon branch through its connection URLs. Production, development, and test therefore share a schema but never a live request path or dataset. Pusher messages are invalidation hints, not alternate state: reconnect, focus, and visible-tab polling all refetch committed PostgreSQL state.
 
 ### Database Design
 
+The data model is shown in three bounded-context views so the relationships remain legible on GitHub.
+
+#### Identity, access, and eligibility
+
 ```mermaid
 erDiagram
-    USER ||--|| USER_PROFILE : has
-    USER ||--o{ USER_ROLE : receives
-    ROLE ||--o{ USER_ROLE : grants
-    USER ||--o| STAFF_PROFILE : may_have
-    STAFF_PROFILE ||--o{ STAFF_COMPENSATION : has
+    USER ||--o| USER_PROFILE : "may have"
+    USER ||--o| STAFF_PROFILE : "may have"
+    USER ||--o{ USER_ROLE : "receives"
+    ROLE ||--o{ USER_ROLE : "grants"
+    USER ||--o{ MANAGER_LOCATION : "is authorized for"
+    LOCATION ||--o{ MANAGER_LOCATION : "grants access"
 
-    USER ||--o{ MANAGER_LOCATION : manages
-    LOCATION ||--o{ MANAGER_LOCATION : authorizes
-    STAFF_PROFILE ||--o{ STAFF_SKILL : holds
-    SKILL ||--o{ STAFF_SKILL : qualifies
-    STAFF_PROFILE ||--o{ STAFF_LOCATION_CERTIFICATION : holds
-    LOCATION ||--o{ STAFF_LOCATION_CERTIFICATION : certifies
-    STAFF_PROFILE ||--o{ AVAILABILITY_RULE : defines
-    STAFF_PROFILE ||--o{ AVAILABILITY_EXCEPTION : overrides
-
-    LOCATION ||--o{ SCHEDULE_WEEK : owns
-    SCHEDULE_WEEK ||--o{ SHIFT : contains
-    LOCATION ||--o{ SHIFT : hosts
-    SKILL ||--o{ SHIFT : requires
-    SHIFT ||--o{ ASSIGNMENT : fills
-    STAFF_PROFILE ||--o{ ASSIGNMENT : works
-    ASSIGNMENT ||--|| ASSIGNMENT_PERIOD : reserves
-    ASSIGNMENT ||--o{ TIME_ENTRY : records
-
-    SHIFT ||--o{ COVERAGE_REQUEST : concerns
-    STAFF_PROFILE ||--o{ COVERAGE_REQUEST : participates
-    USER ||--o{ NOTIFICATION : receives
-    USER ||--o| NOTIFICATION_PREFERENCE : configures
-    USER ||--o{ AUDIT_LOG : performs
+    STAFF_PROFILE ||--o{ STAFF_SKILL : "holds"
+    SKILL ||--o{ STAFF_SKILL : "qualifies"
+    STAFF_PROFILE ||--o{ STAFF_LOCATION_CERTIFICATION : "holds"
+    LOCATION ||--o{ STAFF_LOCATION_CERTIFICATION : "certifies"
+    STAFF_PROFILE ||--o{ AVAILABILITY_RULE : "defines"
+    STAFF_PROFILE ||--o{ AVAILABILITY_EXCEPTION : "overrides"
+    STAFF_PROFILE ||--o{ STAFF_COMPENSATION : "has"
+    USER ||--o| NOTIFICATION_PREFERENCE : "configures"
 ```
 
-Better Auth also owns `session`, `account`, and `verification`. They are omitted from the diagram to keep the scheduling relationships readable.
+[View the identity and eligibility ERD Mermaid source](docs/diagrams/readme_02_er_identity_eligibility.mmd).
+
+#### Scheduling, coverage, and on-duty state
+
+```mermaid
+erDiagram
+    LOCATION ||--o{ SCHEDULE_WEEK : "owns"
+    SCHEDULE_WEEK ||--o{ SHIFT : "contains"
+    LOCATION ||--o{ SHIFT : "hosts"
+    SKILL ||--o{ SHIFT : "requires"
+    SHIFT ||--o{ ASSIGNMENT : "fills"
+    STAFF_PROFILE ||--o{ ASSIGNMENT : "works"
+    ASSIGNMENT ||--|| ASSIGNMENT_PERIOD : "reserves"
+    ASSIGNMENT ||--o{ TIME_ENTRY : "records"
+    SHIFT ||--o{ COVERAGE_REQUEST : "concerns"
+    STAFF_PROFILE ||--o{ COVERAGE_REQUEST : "participates"
+```
+
+[View the scheduling and operations ERD Mermaid source](docs/diagrams/readme_03_er_scheduling_operations.mmd).
+
+#### Authentication, communication, and evidence
+
+```mermaid
+erDiagram
+    USER ||--o{ SESSION : "opens"
+    USER ||--o{ ACCOUNT : "authenticates with"
+    USER ||--o{ NOTIFICATION : "receives"
+    USER ||--o{ AUDIT_LOG : "performs"
+    LOCATION o|--o{ AUDIT_LOG : "may scope"
+
+    VERIFICATION {
+        text identifier
+        timestamp expires_at
+    }
+    OUTBOX_EVENT {
+        uuid id PK
+        text channel
+        text event
+        jsonb payload
+        enum status
+    }
+```
+
+[View the evidence and delivery ERD Mermaid source](docs/diagrams/readme_04_er_evidence_delivery.mmd).
+
+`verification` is keyed by its Better Auth identifier rather than a user foreign key. `outbox_events` deliberately carries channel/event/payload data instead of a domain foreign key so one delivery mechanism can serve every aggregate.
 
 | Domain | Tables | Responsibility |
 | --- | --- | --- |
@@ -169,23 +199,23 @@ Better Auth also owns `session`, `account`, and `verification`. They are omitted
 | Communication | `notifications`, `notification_preferences`, `outbox_events` | Durable user communication and reliable realtime delivery |
 | Evidence | `audit_logs` | Actor, location scope, reason, and before/after state for material actions |
 
-Better Auth identities use `text` IDs. Domain records such as locations, shifts, assignments, coverage requests, and time entries use UUIDs.
+### Data Model and Schema Constraints
 
-### Integrity and Concurrency
+Better Auth identity keys are `text`; application aggregates use UUID primary keys. Foreign keys preserve the ownership paths shown above, while date-effective join tables retain historical eligibility instead of overwriting it.
 
-Every mutation treats the browser preview as advisory and checks current database state again before committing.
+| Area | Key constraints and guarantees |
+| --- | --- |
+| Identity and RBAC | `user_profiles` and `staff_profiles` use the Better Auth `user.id` as both primary and foreign key. `roles.code` is unique and checked to `admin`, `manager`, or `staff`; `user_roles` has a composite primary key. |
+| Manager and staff eligibility | `manager_locations`, `staff_skills`, and `staff_location_certifications` use composite keys that include `valid_from`. Check constraints reject an end date before its start date, preserving time-bounded history. |
+| Availability | Recurring rules store local wall-clock times, IANA timezone, and effective dates; weekday is checked to `1–7`. Date-specific exceptions are indexed by staff and date. |
+| Schedule weeks and shifts | `schedule_weeks` uniquely constrains `(location_id, week_start_date)`. Shift checks require `ends_at > starts_at` and `headcount >= 1`; UTC instants are authoritative while local snapshots preserve location-facing display and DST review. |
+| Assignments | A partial unique index permits only one active `(shift_id, staff_id)` assignment. A manager override cannot be stored without a reason. `assignment_periods` adds a GiST exclusion constraint on `(staff_id, work_period)` so overlapping active work is rejected across every location. |
+| Coverage | An enum limits lifecycle states, and a participant check distinguishes targeted swaps from open drops. Expiry, the three-pending-request limit, and legal state transitions depend on locked current state and are enforced inside service transactions. |
+| On-duty entries | Partial unique indexes allow at most one open time entry for an assignment and at most one open time entry for a staff member. |
+| Compensation and preferences | Effective-dated compensation rows reject negative rates, multipliers below `1`, and reversed date ranges. Notification mode is constrained to `in_app_only` or `in_app_and_email`. |
+| Evidence and delivery | Audit records store actor, optional location scope, reason, request correlation, and JSON before/after state. They are append-only by service contract. Outbox status and creation indexes support ordered, retryable delivery. |
 
-Key safeguards include:
-
-- The assignment transaction locks the shift first and staff scheduling state in deterministic order before rerunning authorization and constraints.
-- A PostgreSQL range exclusion constraint prevents overlapping active assignments for one staff member, including across locations.
-- Shift row locking and in-transaction headcount checks allow exactly one winner for a final open position.
-- `schedule_weeks` enforces one `(location_id, week_start_date)` pair, and active assignments enforce one `(shift_id, staff_id)` pair.
-- Coverage approval locks shift → request → staff, keeps the original assignment active until approval commits, and atomically writes audit, notification, and outbox records.
-- Material shift edits revalidate current assignees and cancel attached pending coverage requests with notifications.
-- Partial unique indexes allow at most one open time entry per assignment and per staff member.
-- UTC instants govern overlap, duration, and rest. IANA timezones and local snapshots preserve the location-facing schedule through DST and overnight work.
-- Audit, notification, and outbox rows commit with their domain change; failed transactions leave no partial side effects.
+Every mutation treats a browser preview as advisory and checks current database state again before committing. Assignment transactions lock shift then staff, rerun authorization and constraints, and let the exclusion constraint provide a final storage-level guard. Coverage approval locks shift → request → affected staff in deterministic order. Outbox workers claim rows with `SELECT ... FOR UPDATE SKIP LOCKED`, preventing concurrent drains from delivering the same pending row. Domain state, audit records, notifications, and outbox events commit together, so a failed transaction leaves no partial side effects.
 
 ## Tech Stack
 
@@ -241,6 +271,8 @@ Populate `.env.local` with development-branch credentials and `.env.test.local` 
 | `NEXT_PUBLIC_PUSHER_APP_KEY` | Public | Pusher application key used by browser and server clients |
 | `NEXT_PUBLIC_PUSHER_CLUSTER` | Public | Pusher application cluster |
 | `OUTBOX_DRAIN_SECRET` | Server only | Bearer secret for the bounded internal retry endpoint |
+| `CRON_SECRET` | Server only | Bearer secret automatically sent by Vercel to the rolling demo refresh route |
+| `DEMO_REFRESH_ENABLED` | Server-only feature flag | Set to `true` only for the public production demo |
 
 The connection URL selects the actual Neon branch; `NEON_BRANCH` is a fail-closed label used by destructive scripts and tests. Never place a Pusher secret, database URL, or auth secret in a `NEXT_PUBLIC_` variable.
 
@@ -282,6 +314,8 @@ The project uses three long-lived Neon branches:
 
 Configure Vercel with the pooled and direct URLs for the Neon `production` branch, set `NEON_BRANCH=production`, and provide the production Better Auth, Pusher, and outbox secrets. Changing `NEON_BRANCH` alone does not switch databases—the two Neon URLs must also target production.
 
+The included Vercel Cron runs once daily at `10:00 UTC`, which fits the Hobby plan's daily-job limit. With `DEMO_REFRESH_ENABLED=true` and `CRON_SECRET` configured, it closes stale on-duty entries, expires stale coverage, and rebuilds only the current and following demo schedule weeks. It does not recreate accounts, roles, locations, skills, or historical schedule data.
+
 Production bootstrap is a deliberately destructive, one-time operation:
 
 ```bash
@@ -310,12 +344,34 @@ The command requires an ignored `.env.production.local`, drops both application 
 | `pnpm db:seed` | Replace deterministic demo data on an authorized branch |
 | `pnpm db:rebuild:development` | Reset, migrate, and seed the development branch |
 | `pnpm db:bootstrap:production` | Guarded destructive production reset, migration, and demo seed |
+| `pnpm db:refresh-demo` | Rebuild rolling schedule fixtures on development without replacing identities |
+| `pnpm db:refresh-demo:production` | Guarded manual refresh of rolling production fixtures |
 | `pnpm db:test:reset` | Reset the isolated test schemas |
 | `pnpm db:verify-isolation` | Prove test writes are not visible in development |
 | `pnpm db:verify-demo` | Verify four locations, twenty staff, and documented logins |
 | `pnpm db:studio` | Open Drizzle Studio |
 
 The integration and browser suites use real Neon transactions. Runtime depends on database region, compute wake-up, and network latency.
+
+## Implementation and Testing Strategy
+
+### Domain service boundaries
+
+React and Next.js entry points are delivery layers, not owners of scheduling rules. Server Components load authorized read models; Server Actions and Route Handlers validate untrusted input and call focused TypeScript services under `server/`. Scheduling, coverage, reports, audit, preferences, on-duty state, and realtime delivery therefore expose reusable seams that the UI and tests exercise directly. The pure constraint engine is shared by candidate previews and transactional assignment, preventing a second implementation of the rules in the interface.
+
+### Test-driven development
+
+The project was delivered in vertical slices using Red → Green → Review/Refactor. Each complex behavior first received a public seam and a failing test, then the smallest maintainable implementation. This was especially important for scheduling constraints, coverage request state transitions, cutoff/emergency behavior, overtime evidence, fairness calculations, outbox delivery, and race outcomes. Internal domain collaborators are not mocked; only external delivery boundaries are substituted where isolation is necessary.
+
+### Verification hierarchy
+
+1. **Pure Vitest checks** exercise deterministic constraint calculations and time handling.
+2. **Transactional integration tests** run against the isolated Neon `test` branch with real migrations, foreign keys, row locks, exclusion constraints, rollback, RBAC, and audit/outbox atomicity.
+3. **Static gates** run `pnpm exec tsc --noEmit` and `pnpm lint` before a production build.
+4. **Playwright evaluator flows** rebuild deterministic development data and walk the six named challenge scenarios through authenticated browser sessions.
+5. **Live adapter smoke tests** verify the Neon WebSocket transaction path and Pusher transport/private-channel boundary.
+
+The suites are intentionally separated by Neon branch: normal development uses `development`, integration tests use `test`, and Vercel uses `production`. Guard scripts fail closed when a command and branch label do not match.
 
 ## Design Decisions and Assumptions
 
@@ -359,6 +415,7 @@ The deterministic seed and `e2e/evaluator-scenarios.spec.ts` cover the challenge
 - Automatic schedule generation is intentionally out of scope; ShiftSync supports human decisions with constraints, alternatives, and evidence.
 - Email delivery is simulated. In-app notifications and their preferences are implemented, but no external email provider is configured.
 - The outbox retry endpoint is implemented and protected, but production must attach a scheduler to call it.
+- The public demo refresh replaces its rolling current/next-week fixtures once daily; evaluator changes to those weeks are not permanent.
 - External payroll, hardware time clocks, geofencing, holiday calendars, and workforce-system integrations are out of scope.
 - Demo identities are seed-driven; there is no admin-facing team provisioning interface yet.
 - Availability persistence and at-risk reassessment exist in the domain layer, but a complete staff self-service availability editor is not included in the current UI.

@@ -1,0 +1,16 @@
+erDiagram
+    USER ||--o| USER_PROFILE : "may have"
+    USER ||--o| STAFF_PROFILE : "may have"
+    USER ||--o{ USER_ROLE : "receives"
+    ROLE ||--o{ USER_ROLE : "grants"
+    USER ||--o{ MANAGER_LOCATION : "is authorized for"
+    LOCATION ||--o{ MANAGER_LOCATION : "grants access"
+
+    STAFF_PROFILE ||--o{ STAFF_SKILL : "holds"
+    SKILL ||--o{ STAFF_SKILL : "qualifies"
+    STAFF_PROFILE ||--o{ STAFF_LOCATION_CERTIFICATION : "holds"
+    LOCATION ||--o{ STAFF_LOCATION_CERTIFICATION : "certifies"
+    STAFF_PROFILE ||--o{ AVAILABILITY_RULE : "defines"
+    STAFF_PROFILE ||--o{ AVAILABILITY_EXCEPTION : "overrides"
+    STAFF_PROFILE ||--o{ STAFF_COMPENSATION : "has"
+    USER ||--o| NOTIFICATION_PREFERENCE : "configures"

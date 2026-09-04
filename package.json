@@ -19,6 +19,8 @@
     "db:seed": "tsx scripts/seed.ts",
     "db:rebuild:development": "tsx scripts/rebuild-database.ts development",
     "db:bootstrap:production": "tsx scripts/rebuild-database.ts production",
+    "db:refresh-demo": "tsx scripts/refresh-demo-data.ts development",
+    "db:refresh-demo:production": "tsx scripts/refresh-demo-data.ts production",
     "db:verify-demo": "tsx scripts/verify-demo-data.ts",
     "db:test:reset": "tsx scripts/reset-test-database.ts",
     "db:verify-isolation": "tsx scripts/verify-database-isolation.ts",

@@ -6,19 +6,6 @@ config({ path: seedEnvFile, override: true, quiet: true });
 
 const DEMO_PASSWORD = "ShiftSyncDemo!2026";
 
-function monday(date = new Date(), offsetWeeks = 0) {
-  const result = new Date(date);
-  const day = result.getUTCDay() || 7;
-  result.setUTCDate(result.getUTCDate() - day + 1 + offsetWeeks * 7);
-  return result.toISOString().slice(0, 10);
-}
-
-function addDays(date: string, days: number) {
-  const value = new Date(`${date}T12:00:00Z`);
-  value.setUTCDate(value.getUTCDate() + days);
-  return value.toISOString().slice(0, 10);
-}
-
 async function seed() {
   const branch = process.env.NEON_BRANCH;
   const productionConfirmed = process.env.ALLOW_PRODUCTION_BOOTSTRAP === "I_UNDERSTAND_THIS_RESETS_PRODUCTION";
@@ -30,7 +17,6 @@ async function seed() {
   const { auth } = await import("@/server/auth");
   const { db } = await import("@/server/db");
   const schema = await import("@/server/db/schema");
-  const { localDateTimeToInstant, getLocalSnapshot } = await import("@/server/scheduling/time");
   const { and, eq } = await import("drizzle-orm");
 
   await db.transaction(async (tx) => {
@@ -100,7 +86,7 @@ async function seed() {
     return userId;
   }
 
-  const adminId = await createUser({ email: "admin@shiftsync.local", firstName: "Avery", lastName: "Morgan", role: "admin" });
+  await createUser({ email: "admin@shiftsync.local", firstName: "Avery", lastName: "Morgan", role: "admin" });
   const eastManagerId = await createUser({ email: "manager.east@shiftsync.local", firstName: "Alex", lastName: "Rivera", role: "manager" });
   const westManagerId = await createUser({ email: "manager.west@shiftsync.local", firstName: "Morgan", lastName: "Brooks", role: "manager" });
   const staffInputs = [
@@ -151,8 +137,6 @@ async function seed() {
     { code: "host", name: "Host" },
   ]).returning({ id: schema.skills.id, code: schema.skills.code });
   const skillIds = Object.fromEntries(skillRows.map((skill) => [skill.code, skill.id]));
-  const eastStaff = staffInputs.slice(0, 10);
-  const westStaff = staffInputs.slice(10);
   for (const [index, input] of staffInputs.entries()) {
     const [email, , , timezone] = input;
     const userId = staffIds[email];
@@ -181,101 +165,11 @@ async function seed() {
     status: "revoked",
   });
 
-  const currentWeek = monday();
-  const scenarioWeek = monday(new Date(), 1);
-  type WeekMap = Record<string, { current: string; scenario: string }>;
-  const weeks: WeekMap = {};
-  for (const location of locationRows) {
-    const east = location.name === "Harbor East" || location.name === "Midtown Table";
-    const inserted = await db.insert(schema.scheduleWeeks).values([
-      { locationId: location.id, weekStartDate: currentWeek, status: "published", publishedAt: new Date(), publishedBy: east ? eastManagerId : westManagerId },
-      { locationId: location.id, weekStartDate: scenarioWeek, status: "published", publishedAt: new Date(), publishedBy: east ? eastManagerId : westManagerId },
-    ]).returning({ id: schema.scheduleWeeks.id, weekStartDate: schema.scheduleWeeks.weekStartDate });
-    weeks[location.name] = { current: inserted.find((week) => week.weekStartDate === currentWeek)!.id, scenario: inserted.find((week) => week.weekStartDate === scenarioWeek)!.id };
-  }
-
-  async function createShift(input: { locationName: string; week: "current" | "scenario"; day: number; startHour: number; duration: number; skill?: string; premium?: boolean; headcount?: number; assignees?: string[] }) {
-    const location = locationByName[input.locationName];
-    const weekStart = input.week === "current" ? currentWeek : scenarioWeek;
-    const localDate = addDays(weekStart, input.day);
-    const startsAt = localDateTimeToInstant(`${localDate}T${String(input.startHour).padStart(2, "0")}:00`, location.timezone);
-    const endsAt = new Date(startsAt.getTime() + input.duration * 60 * 60_000);
-    const localStart = getLocalSnapshot(startsAt, location.timezone);
-    const localEnd = getLocalSnapshot(endsAt, location.timezone);
-    const [shift] = await db.insert(schema.shifts).values({
-      scheduleWeekId: weeks[input.locationName][input.week],
-      locationId: location.id,
-      requiredSkillId: skillIds[input.skill ?? "server"],
-      startsAt,
-      endsAt,
-      timezone: location.timezone,
-      localStartDate: localStart.date,
-      localStartTime: localStart.time,
-      localEndDate: localEnd.date,
-      localEndTime: localEnd.time,
-      headcount: input.headcount ?? 1,
-      premium: input.premium ?? false,
-      updatedBy: input.locationName === "Harbor East" || input.locationName === "Midtown Table" ? eastManagerId : westManagerId,
-    }).returning({ id: schema.shifts.id });
-    for (const email of input.assignees ?? []) {
-      const staffId = staffIds[email];
-      const [assignment] = await db.insert(schema.assignments).values({ shiftId: shift.id, staffId, assignedBy: input.locationName === "Harbor East" || input.locationName === "Midtown Table" ? eastManagerId : westManagerId }).returning({ id: schema.assignments.id });
-      await db.insert(schema.assignmentPeriods).values({ assignmentId: assignment.id, staffId, workPeriod: `[${startsAt.toISOString()},${endsAt.toISOString()})` });
-    }
-    return shift.id;
-  }
-
-  for (const week of ["current", "scenario"] as const) {
-    for (let day = 0; day < 5; day++) {
-      await createShift({ locationName: "Harbor East", week, day, startHour: 9, duration: 7, assignees: ["maria@shiftsync.local"] });
-      await createShift({ locationName: "Harbor East", week, day, startHour: 8, duration: 8, assignees: ["coverage@shiftsync.local"] });
-      await createShift({ locationName: "Harbor East", week, day, startHour: 10, duration: day === 4 ? 12 : 10, skill: "line-cook", assignees: ["devon@shiftsync.local"] });
-    }
-    for (let day = 0; day < 6; day++) await createShift({ locationName: "Harbor East", week, day, startHour: 17, duration: 5, assignees: ["casey@shiftsync.local"], premium: day >= 4 });
-    await createShift({ locationName: "Harbor East", week, day: 6, startHour: 17, duration: 5, premium: true });
-    for (let day = 0; day < 7; day++) {
-      // Keep Omar free on Wednesday so the dedicated Host opening below has a
-      // fully eligible candidate for the simultaneous-assignment race.
-      const midtownAssignee = day === 2 ? eastStaff[9][0] : eastStaff[5 + (day % 5)][0];
-      await createShift({ locationName: "Midtown Table", week, day, startHour: 16, duration: 7, premium: day >= 4, assignees: [midtownAssignee] });
-      await createShift({ locationName: "Pacific Pier", week, day, startHour: 9, duration: 8, premium: day >= 5, assignees: [westStaff[day % 10][0]] });
-      await createShift({ locationName: "Sunset Kitchen", week, day, startHour: 15, duration: 7, skill: day % 2 ? "bartender" : "server", premium: day >= 4, assignees: [westStaff[(day + 3) % 10][0]] });
-    }
-  }
-
-  const easternSoon = getLocalSnapshot(new Date(Date.now() + 2 * 60 * 60_000), "America/New_York");
-  const easternLater = getLocalSnapshot(new Date(Date.now() + 6 * 60 * 60_000), "America/New_York");
-  const currentWeekDate = new Date(`${currentWeek}T12:00:00Z`).getTime();
-  const localDayOffset = (date: string) => Math.round((new Date(`${date}T12:00:00Z`).getTime() - currentWeekDate) / (24 * 60 * 60_000));
-  await createShift({ locationName: "Harbor East", week: "current", day: localDayOffset(easternSoon.date), startHour: Number(easternSoon.time.slice(0, 2)), duration: 3, skill: "bartender" });
-  await createShift({ locationName: "Harbor East", week: "current", day: localDayOffset(easternLater.date), startHour: Number(easternLater.time.slice(0, 2)), duration: 2, skill: "host" });
-  await createShift({ locationName: "Harbor East", week: "scenario", day: 5, startHour: 8, duration: 8, premium: true });
-  // Dedicated concurrency fixture: Omar is qualified, available, and unassigned
-  // that day, so both managers can reach the transactional commit boundary.
-  await createShift({ locationName: "Harbor East", week: "scenario", day: 2, startHour: 12, duration: 3, skill: "host" });
-
-  const scenarioShifts = await db.select({ id: schema.shifts.id, localStartDate: schema.shifts.localStartDate, localStartTime: schema.shifts.localStartTime, startsAt: schema.shifts.startsAt }).from(schema.shifts).where(eq(schema.shifts.scheduleWeekId, weeks["Harbor East"].scenario));
-  const mariaFridayShift = scenarioShifts.find((shift) => shift.localStartDate === addDays(scenarioWeek, 4) && shift.localStartTime.startsWith("09:00"))!;
-  const jordanSaturdayShift = scenarioShifts.find((shift) => shift.localStartDate === addDays(scenarioWeek, 5))!.id;
-  await db.insert(schema.coverageRequests).values([
-    { shiftId: mariaFridayShift.id, requesterStaffId: staffIds["maria@shiftsync.local"], type: "drop", status: "open", reason: "Family commitment", expiresAt: new Date(mariaFridayShift.startsAt.getTime() - 24 * 60 * 60_000) },
-    { shiftId: jordanSaturdayShift, requesterStaffId: staffIds["casey@shiftsync.local"], targetStaffId: staffIds["priya@shiftsync.local"], type: "swap", status: "accepted_by_target", reason: "Training appointment", acceptedAt: new Date() },
-  ]);
-
-  const today = new Date().toISOString().slice(0, 10);
-  const [todayAssignment] = await db.select({ assignmentId: schema.assignments.id, staffId: schema.assignments.staffId, locationId: schema.shifts.locationId })
-    .from(schema.assignments).innerJoin(schema.shifts, eq(schema.assignments.shiftId, schema.shifts.id))
-    .where(and(eq(schema.shifts.scheduleWeekId, weeks["Harbor East"].current), eq(schema.shifts.localStartDate, today))).limit(1);
-  if (todayAssignment) await db.insert(schema.timeEntries).values({ ...todayAssignment, clockInAt: new Date(Date.now() - 75 * 60_000) });
-
-  await db.insert(schema.notifications).values([
-    { userId: eastManagerId, type: "COVERAGE_APPROVAL_REQUIRED", title: "Swap ready for approval", message: "Casey and Priya agreed to a swap. Review eligibility before approval.", link: `/schedule?week=${scenarioWeek}&location=${locationByName["Harbor East"].id}#coverage-desk` },
-    { userId: staffIds["maria@shiftsync.local"], type: "SCHEDULE_PUBLISHED", title: "Schedule published", message: `Your schedule for the week of ${scenarioWeek} is ready.`, link: `/schedule?week=${scenarioWeek}#schedule-content` },
-  ]);
-  await db.insert(schema.auditLogs).values({ actorId: adminId, action: "DEMO_DATA_SEEDED", entityType: "system", entityId: "development", reason: "Deterministic evaluator dataset", afterState: { currentWeek, scenarioWeek, locations: locationRows.length, staff: staffInputs.length } });
+  const { refreshDemoScheduleFixtures } = await import("@/server/demo/refresh");
+  const refreshed = await refreshDemoScheduleFixtures();
 
   console.log(`Seeded 4 locations and 20 staff on the Neon ${branch} branch.`);
-  console.log(`Current week: ${currentWeek}; evaluator scenario week: ${scenarioWeek}.`);
+  console.log(`Current week: ${refreshed.currentWeek}; evaluator scenario week: ${refreshed.scenarioWeek}.`);
   console.log("Admin:    admin@shiftsync.local");
   console.log("Manager E: manager.east@shiftsync.local");
   console.log("Manager W: manager.west@shiftsync.local");
